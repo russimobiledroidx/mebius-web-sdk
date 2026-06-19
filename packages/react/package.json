@@ -16,8 +16,14 @@
   },
   "files": ["dist", "README.md"],
   "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/russimobiledroidx/mebius-web-sdk.git",
+    "directory": "packages/react"
+  },
   "scripts": {
     "build": "tsup",
+    "prepack": "tsup",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src"

@@ -13,12 +13,42 @@ SDK web Mebius untuk live streaming — install, ikuti docs, hit API.
 
 ## Install
 
+> Repo ini **private** dan belum dipublish ke npm registry / domain manapun.
+> Metode install yang terbukti jalan adalah **tarball** (di bawah). Lihat
+> [Distribusi private](#distribusi-private-github--tarball) untuk detail +
+> caveat git install.
+
+### Tarball (cara utama, paling reliable)
+
+Maintainer membuat tarball sekali per rilis, lalu consumer install dari file:
+
+```bash
+# Maintainer (di repo SDK):
+pnpm --filter @mebius/web build
+pnpm --filter @mebius/web pack            # -> packages/web/mebius-web-0.1.0.tgz
+
+# Consumer (di project kamu):
+npm i ./mebius-web-0.1.0.tgz
+# atau: pnpm add ./mebius-web-0.1.0.tgz / yarn add ./mebius-web-0.1.0.tgz
+```
+
+Tarball sudah berisi `dist/` (ESM + CJS + UMD + types) dan menarik dependency
+runtime (`hls.js`) otomatis. Tidak perlu build di sisi consumer.
+
+```ts
+const { Mebius } = require("@mebius/web"); // CJS — works
+import { Mebius } from "@mebius/web";       // ESM — works
+```
+
+Setelah package dipublish ke npm registry (opsi masa depan, npm tidak butuh
+domain):
+
 ```bash
 npm i @mebius/web
 # atau: pnpm add @mebius/web / yarn add @mebius/web
 ```
 
-Via CDN (UMD global `Mebius`):
+Via CDN (UMD global `Mebius`) — hanya tersedia setelah publish ke registry/CDN:
 
 ```html
 <script src="https://unpkg.com/@mebius/web/dist/index.global.js"></script>
@@ -233,6 +263,69 @@ client.on("error", (e) => {
 - **HTTPS:** WebRTC butuh secure context di production.
 - **Autoplay:** browser memblok autoplay dengan suara. Mulai playback setelah
   interaksi user, atau set `muted` dulu lalu unmute via `setVolume`.
+
+## Distribusi private (GitHub / tarball)
+
+SDK ini hidup di **monorepo private** (`russimobiledroidx/mebius-web-sdk`)
+dengan 3 package: `@mebius/web` (core, tanpa dependency internal), `@mebius/react`,
+`@mebius/react-native`. Tidak ada registry/domain publik. Berikut metode install
+beserta tingkat keandalannya — apa adanya, tanpa janji palsu.
+
+### ✅ Tarball — reliable (cara utama)
+
+```bash
+# 1. Maintainer build + pack semua package sekaligus (di repo SDK):
+pnpm pack:all
+#   -> mebius-web-0.1.0.tgz
+#      mebius-react-0.1.0.tgz
+#      mebius-react-native-0.1.0.tgz   (di root repo)
+
+# 2. Consumer install (copy .tgz ke project, lalu):
+npm i ./mebius-web-0.1.0.tgz
+```
+
+Selalu jalan untuk repo private karena tidak menyentuh registry sama sekali.
+`@mebius/web` self-contained (tidak punya workspace dep), jadi paling bersih.
+
+### ⚠️ git install — TIDAK reliable untuk monorepo subpackage
+
+`npm i 'github:russimobiledroidx/mebius-web-sdk'` **tidak** bisa dipakai untuk
+menginstall satu sub-package: npm/pnpm meng-clone seluruh repo dan hanya membaca
+`package.json` di root, yang `private: true` dan bukan salah satu dari ketiga
+package. npm juga tidak mendukung pemilihan sub-direktori untuk git dependency
+secara native. Jadi metode ini **tidak didukung** di sini — pakai tarball.
+
+(Catatan: tool pihak ketiga seperti `gitpkg` mem-publish subdir sebagai git URL,
+tetapi **tidak bekerja untuk repo private**. Karena itu tarball adalah jalur
+utama.)
+
+### Cross-package dependency (react / react-native)
+
+`@mebius/react` bergantung ke `@mebius/web`. Saat di-pack, pnpm menulis ulang
+`workspace:*` menjadi versi konkret (`"@mebius/web": "0.1.0"`) yang tidak ada di
+registry manapun untuk repo private ini. Akibatnya, **install tarball react
+sendirian akan gagal** (npm mencoba mengambil `@mebius/web@0.1.0` dari registry).
+
+Solusi: install kedua tarball dalam **satu perintah** supaya npm memuaskan
+`@mebius/web@0.1.0` dari tarball lokal yang kamu sediakan:
+
+```bash
+npm i ./mebius-web-0.1.0.tgz ./mebius-react-0.1.0.tgz react
+```
+
+`@mebius/web` (core) dan `@mebius/react-native` (skeleton, tanpa dep internal)
+bisa di-install standalone tanpa kendala ini.
+
+### Opsi masa depan (lebih mulus): npm publish / GitHub Packages
+
+Tidak seperti Maven Central, **npm tidak punya syarat domain**. Begitu siap,
+publish ke registry npm privat atau **GitHub Packages** menghapus seluruh dance
+tarball:
+
+```bash
+pnpm release   # turbo build + changeset publish
+# consumer cukup: npm i @mebius/web
+```
 
 ## Versioning & changelog
 

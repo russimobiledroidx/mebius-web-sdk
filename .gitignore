@@ -5,5 +5,6 @@ dist/
 .DS_Store
 coverage/
 *.log
+*.tgz
 .env
 .env.local

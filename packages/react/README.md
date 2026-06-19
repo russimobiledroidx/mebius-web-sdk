@@ -9,9 +9,28 @@ README `@mebius/web`; di sini fokus API hooks.
 
 ## Install
 
+Repo ini **private** (belum dipublish ke npm). Cara yang terbukti jalan adalah
+**tarball**. Karena `@mebius/react` bergantung ke `@mebius/web`, install **kedua
+tarball dalam satu perintah** supaya dependency `@mebius/web` terpenuhi dari
+tarball lokal (kalau tidak, npm akan mencoba mengambilnya dari registry dan
+gagal):
+
+```bash
+# Maintainer (di repo SDK):
+pnpm pack:all   # -> mebius-web-0.1.0.tgz, mebius-react-0.1.0.tgz (di root repo)
+
+# Consumer (kedua tarball sekaligus + react):
+npm i ./mebius-web-0.1.0.tgz ./mebius-react-0.1.0.tgz react
+```
+
+Setelah dipublish ke registry npm (opsi masa depan):
+
 ```bash
 npm i @mebius/react @mebius/web react
 ```
+
+> Detail distribusi private (kenapa git install tidak dipakai, perilaku
+> `workspace:*` saat pack) ada di README [`@mebius/web`](../web#distribusi-private-github--tarball).
 
 ## Hooks
 

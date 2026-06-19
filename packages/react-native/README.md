@@ -10,6 +10,30 @@ yang sama seperti [`@mebius/web`](../web); kerja sesungguhnya didelegasikan ke
 > Status: **skeleton**. Tanpa native module terpasang, pemanggilan API melempar
 > `MebiusError` dengan code `NOT_IMPLEMENTED` — sinyal jelas, bukan no-op diam.
 
+## Install
+
+Repo ini **private** (belum dipublish ke npm). Cara yang terbukti jalan adalah
+**tarball**. Package ini **tidak** punya dependency internal (`@mebius/web`),
+jadi bisa di-install standalone:
+
+```bash
+# Maintainer (di repo SDK):
+pnpm --filter @mebius/react-native build
+pnpm --filter @mebius/react-native pack   # -> mebius-react-native-0.1.0.tgz
+
+# Consumer:
+npm i ./mebius-react-native-0.1.0.tgz react react-native
+```
+
+Setelah dipublish ke registry npm (opsi masa depan):
+
+```bash
+npm i @mebius/react-native react react-native
+```
+
+> Detail distribusi private (kenapa git install monorepo subpackage tidak
+> dipakai) ada di README [`@mebius/web`](../web#distribusi-private-github--tarball).
+
 ## Bridge interface
 
 Native module wajib mengimplementasikan `MebiusNativeBridge` dan memanggil

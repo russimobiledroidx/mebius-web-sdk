@@ -13,6 +13,7 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "check:abstraction": "node scripts/check-abstraction.mjs",
+    "pack:all": "turbo run build && pnpm -r --filter \"./packages/*\" exec pnpm pack --pack-destination ../..",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "turbo run build && changeset publish"
