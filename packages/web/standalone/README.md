@@ -3,7 +3,7 @@
 One self-contained file, just like `ZegoExpressWebRTC.js`. Download it, drop it
 into your PHP (or any plain HTML) project, add a `<script>` tag — done. No npm,
 no bundler, no build step. The scale-mode playback engine is bundled inside, so
-the file has **zero external dependencies**.
+the file has **zero external dependencies**. `Mebius` becomes a global.
 
 ## Files
 
@@ -12,73 +12,271 @@ the file has **zero external dependencies**.
 | `mebius.min.js` | production (minified, ~520 KB) |
 | `mebius.js` | dev (readable) |
 
-Download the raw file straight from GitHub:
+The repo is private, so grab the file once (you have repo access), then commit
+it into your project (e.g. `assets/mebius.min.js`) or serve it from your own
+server. Your end users load it from your site — they never touch GitHub.
+
+```bash
+# you, once (with repo access):
+curl -L -H "Authorization: token <YOUR_GH_PAT>" \
+  https://raw.githubusercontent.com/russimobiledroidx/mebius-web-sdk/v0.1.0/packages/web/standalone/mebius.min.js \
+  -o assets/mebius.min.js
+```
+
+---
+
+## Mental model (1 minute)
 
 ```
-https://raw.githubusercontent.com/russimobiledroidx/mebius-web-sdk/v0.1.0/packages/web/standalone/mebius.min.js
+Mebius.init({ appId, gateway })   // configure once (public values, safe in client)
+client  = Mebius.connect({ token })   // token minted by YOUR backend
+player  = client.createPlayer({ mode })          // viewer
+broadcaster = client.createBroadcaster({ video, audio })   // host
+player.play(streamId, "#video")  /  broadcaster.start(streamId)
 ```
 
-Save it next to your PHP files, e.g. `assets/mebius.min.js`.
+- **`gateway`** = your Mebius signaling URL (public).
+- **`token`** = short-lived JWT your backend mints from (appId + appSecret).
+  The **app secret never touches the browser** — you only ship the token.
+- **`streamId`** = the stream to publish/watch.
+- **`mode`** = `"low-latency"` (interactive) or `"scale"` (big audience). Mebius
+  picks the delivery automatically; you never deal with the transport.
 
-## Use in PHP (paste this in)
+> ⚠️ Security note vs the Zego sample: that code put `ZEGO_SERVER_SECRET` /
+> `secretKey` into the browser `CONFIG`. **Do not do that with Mebius.** The
+> client gets ONLY `appId`, `gateway`, and a short-lived `token`. The secret
+> stays on your PHP server and is used there to mint the token.
+
+---
+
+## Coming from Zego? Call mapping
+
+| Zego (`zg`) | Mebius |
+|---|---|
+| `new ZegoExpressEngine(appId, server)` | `Mebius.init({ appId, gateway })` |
+| `zg.loginRoom(roomId, token, user)` | `Mebius.connect({ token })` (no separate room login) |
+| `zg.startPlayingStream(streamId)` + `createRemoteStreamView` + `view.play('el')` | `player.play(streamId, "#el")` (one call, renders into the element) |
+| `zg.mutePlayStreamAudio(streamId, true/false)` | `player.setVolume(0)` / `player.setVolume(1)` |
+| `zg.stopPlayingStream` + `zg.logoutRoom` | `player.stop()` (+ `client.disconnect()` to fully leave) |
+| `zg.startPublishingStream` | `broadcaster.start(streamId)` |
+| `window.ZegoExpressEngine` ready-check | `window.Mebius` ready-check (see `waitForMebius`) |
+| status/error strings | `client.on("error", e => …)` with `e.code` |
+
+`roomId` → there is no room concept; use a `streamId`. (If you keyed streams off
+a room like `` `${roomId}_stream` ``, keep that exact convention — just pass the
+resulting string as `streamId`.)
+
+---
+
+## A. PHP — viewer (mirrors the Zego sample)
+
+Server mints the token (secret stays server-side), injects `appId`/`gateway`
+and the token into the page. The JS is the Mebius equivalent of the Zego flow:
+fetch token → connect → play → mute/leave, with a status UI and an SDK-ready
+wait. (jQuery used only for DOM, same as the sample — it is NOT required by Mebius.)
 
 ```php
 <?php
-// Your backend mints a short-lived token from (appId + appSecret).
-// The app secret NEVER leaves the server. Use the mebius-php SDK or any JWT lib.
-$token = mint_mebius_token_for_current_user(); // returns a JWT string
+// Mint the token on the server. Use the mebius-php SDK or any JWT lib.
+// $issuer = new Mebius\TokenIssuer($appId, $appSecret);
+// $token  = $issuer->mintPlayToken($streamId, $userId);   // viewer => "play"
+$appId   = (int) env('MEBIUS_APP_ID');
+$gateway = env('MEBIUS_GATEWAY');                 // public signaling URL
+$token   = fetch_mebius_token_for_user();         // your backend mint (server-side secret)
 ?>
-<!doctype html>
-<html>
-<head><meta charset="utf-8"></head>
-<body>
-  <video id="preview" autoplay muted playsinline width="360"></video>
-  <video id="viewer"  autoplay playsinline width="360"></video>
-  <button id="go">Go live</button>
-  <button id="watch">Watch</button>
+<div id="status" class="alert d-none"></div>
+<div id="remoteVideo"></div>
+<button id="muteBtn">🔊 Mute</button>
+<button id="leaveBtn">Leave</button>
 
-  <!-- the one file -->
-  <script src="assets/mebius.min.js"></script>
-  <script>
-    // Mebius is a global — native JS, no imports.
-    Mebius.init({ appId: "app_123", gateway: "https://gateway.mebius.io" });
-    const client = Mebius.connect({ token: <?= json_encode($token) ?> });
+<script src="assets/mebius.min.js"></script>
+<script>
+  const CONFIG = {
+    appId:   <?= json_encode($appId) ?>,
+    gateway: <?= json_encode($gateway) ?>,   // NOT a secret
+    token:   <?= json_encode($token) ?>,     // short-lived, from your backend
+  };
 
-    client.on("error", (e) => console.warn("[mebius]", e.code, e.message));
+  let client = null, player = null, muted = false;
+  const status = $('#status');
 
-    // Broadcast
-    const broadcaster = client.createBroadcaster({ video: true, audio: true });
-    document.getElementById("go").onclick = async () => {
-      await broadcaster.start("demo-stream");
-      broadcaster.attachPreview("#preview");
-    };
+  function showStatus(msg, type = 'info') {
+    const map = { info:'alert-info', success:'alert-success', error:'alert-danger' };
+    status.removeClass().addClass('alert ' + (map[type] || 'alert-info')).text(msg).removeClass('d-none');
+  }
+  const hideStatus = () => status.addClass('d-none');
 
-    // Watch
-    const player = client.createPlayer({ mode: "low-latency" }); // or "scale"
-    document.getElementById("watch").onclick = () =>
-      player.play("demo-stream", "#viewer");
-  </script>
-</body>
-</html>
+  // Mebius equivalent of waitForZegoSDK
+  function waitForMebius(cb, maxAttempts = 50) {
+    let n = 0;
+    const t = setInterval(() => {
+      if (window.Mebius) { clearInterval(t); cb(); }
+      else if (++n >= maxAttempts) { clearInterval(t); showStatus('❌ Failed to load Mebius SDK', 'error'); }
+    }, 100);
+  }
+
+  async function joinStream(streamId, mode = 'low-latency') {
+    try {
+      showStatus('Connecting...', 'info');
+      Mebius.init({ appId: CONFIG.appId, gateway: CONFIG.gateway });
+      client = Mebius.connect({ token: CONFIG.token });
+      client.on('error', (e) => showStatus(`❌ ${e.code}: ${e.message}`, 'error'));
+
+      player = client.createPlayer({ mode });          // "low-latency" or "scale"
+      player.on('buffering', () => showStatus('Buffering...', 'info'));
+      player.on('playing',  () => showStatus(`✅ Watching ${streamId}`, 'success'));
+
+      showStatus('Starting playback...', 'info');
+
+      // optional 30s timeout, like the sample
+      const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 30000));
+      await Promise.race([ player.play(streamId, '#remoteVideo'), timeout ]);
+
+      setTimeout(hideStatus, 1500);
+    } catch (err) {
+      const msg = err.message === 'timeout'
+        ? 'Stream not available. Host may not be streaming yet.'
+        : err.message;
+      showStatus(`❌ ${msg}`, 'error');
+    }
+  }
+
+  function toggleMute() {
+    if (!player) return;
+    muted = !muted;
+    player.setVolume(muted ? 0 : 1);                  // Mebius: volume 0 == muted
+    $('#muteBtn').text(muted ? '🔇 Unmute' : '🔊 Mute');
+  }
+
+  async function leaveStream() {
+    try {
+      if (player) { await player.stop(); player = null; }
+      if (client) { client.disconnect(); client = null; }
+      showStatus('Left stream', 'success');
+      setTimeout(hideStatus, 1500);
+    } catch (e) { console.error(e); }
+  }
+
+  $(document).ready(() => {
+    showStatus('Initializing...', 'info');
+    waitForMebius(() => {
+      $('#muteBtn').on('click', toggleMute);
+      $('#leaveBtn').on('click', leaveStream);
+      joinStream('<?= $streamId ?>', 'low-latency');   // streamId from PHP
+    });
+  });
+</script>
 ```
 
-That's the whole integration. See `example.php` in this folder for a fuller
-two-screen version (start/stop, switch camera, mute, volume, mode toggle).
+A complete runnable file with both Broadcast and Watch screens is in
+[`example.php`](./example.php) (`php -S localhost:8000 example.php`).
+
+---
+
+## B. Native JS — viewer (no jQuery, no framework)
+
+Same flow, plain DOM:
+
+```html
+<div id="remoteVideo"></div>
+<button id="mute">🔊 Mute</button>
+<button id="leave">Leave</button>
+
+<script src="mebius.min.js"></script>
+<script>
+  const APP_ID = 123, GATEWAY = "https://gateway.mebius.io";
+
+  async function getToken() {
+    // your backend mints it; secret stays on the server
+    const r = await fetch("/api/mebius-token?role=viewer&streamId=demo-stream");
+    return (await r.text()).trim();
+  }
+
+  let client, player, muted = false;
+
+  async function watch(streamId, mode = "low-latency") {
+    Mebius.init({ appId: APP_ID, gateway: GATEWAY });
+    client = Mebius.connect({ token: await getToken() });
+    client.on("error", (e) => console.warn(e.code, e.message));
+
+    player = client.createPlayer({ mode });           // or "scale"
+    player.on("playing", () => console.log("playing", streamId));
+    await player.play(streamId, "#remoteVideo");
+  }
+
+  document.getElementById("mute").onclick = () => {
+    if (!player) return;
+    muted = !muted;
+    player.setVolume(muted ? 0 : 1);
+    mute.textContent = muted ? "🔇 Unmute" : "🔊 Mute";
+  };
+  document.getElementById("leave").onclick = async () => {
+    await player?.stop(); client?.disconnect(); player = client = null;
+  };
+
+  watch("demo-stream");
+</script>
+```
+
+---
+
+## C. Native JS — broadcaster (host)
+
+```html
+<video id="preview" autoplay muted playsinline></video>
+<button id="go">Go live</button>
+<button id="flip">Switch camera</button>
+<button id="mic">Mute mic</button>
+
+<script src="mebius.min.js"></script>
+<script>
+  Mebius.init({ appId: 123, gateway: "https://gateway.mebius.io" });
+  let micOn = true, b;
+
+  document.getElementById("go").onclick = async () => {
+    const token = await fetch("/api/mebius-token?role=broadcaster&streamId=demo-stream").then(r => r.text());
+    const client = Mebius.connect({ token });
+    b = client.createBroadcaster({ video: true, audio: true });
+    await b.start("demo-stream");        // internally negotiates with the gateway (hidden)
+    b.attachPreview("#preview");         // local preview
+  };
+  document.getElementById("flip").onclick = () => b?.switchCamera();
+  document.getElementById("mic").onclick  = () => b?.setMicEnabled(micOn = !micOn);
+</script>
+```
+
+---
 
 ## Globals exposed
 
 - `Mebius` — `Mebius.init({ appId, gateway })`, `Mebius.connect({ token })`
-- `MebiusError` — thrown/emitted errors carry a `.code` (`TOKEN_EXPIRED`,
-  `PERMISSION_DENIED`, `CONNECTION_FAILED`, `NOT_CONNECTED`, `STREAM_NOT_FOUND`)
+- `MebiusError` — errors carry a `.code`: `TOKEN_EXPIRED`, `PERMISSION_DENIED`,
+  `CONNECTION_FAILED`, `NOT_CONNECTED`, `STREAM_NOT_FOUND`
 
-API is identical to `@mebius/web` — see the [package README](../README.md) for
-the full method/event reference.
+### Full API (identical to `@mebius/web`)
+
+| Object | Method | Notes |
+|---|---|---|
+| `Mebius` | `init({ appId, gateway })` | call once |
+| `Mebius` | `connect({ token })` → `client` | token from backend |
+| `client` | `createPlayer({ mode })` → `player` | `mode: "low-latency" \| "scale"` |
+| `client` | `createBroadcaster({ video, audio })` → `broadcaster` | |
+| `client` | `disconnect()` | leave entirely |
+| `client` | `on("connected"\|"disconnected"\|"error", cb)` | |
+| `player` | `play(streamId, "#el")` / `stop()` | renders into the element |
+| `player` | `setVolume(0..1)` | `0` = muted |
+| `player` | `on("playing"\|"buffering"\|"ended"\|"stats", cb)` | |
+| `broadcaster` | `start(streamId)` / `stop()` | |
+| `broadcaster` | `switchCamera()` / `setMicEnabled(bool)` / `setCameraEnabled(bool)` | |
+| `broadcaster` | `attachPreview("#el")` | local preview |
+| `broadcaster` | `on("started"\|"stopped"\|"stats", cb)` | |
 
 ## Notes
 
 - **HTTPS required in production** (WebRTC needs a secure context). `localhost`
-  is fine for development.
-- Token must be minted server-side. With PHP, use the
-  [mebius-php](https://github.com/russimobiledroidx/mebius-php) server SDK
-  (`Mebius\TokenIssuer`) or any JWT library.
-- Rebuild this file after SDK changes with: `pnpm --filter @mebius/web build:standalone`.
+  is fine for dev.
+- **Token = server-side only.** Mint it in PHP with the
+  [mebius-php](https://github.com/russimobiledroidx/mebius-php) SDK
+  (`Mebius\TokenIssuer`) or any JWT lib. Never embed the app secret in the page.
+- **`TOKEN_EXPIRED`** → fetch a fresh token from your backend and `connect` again.
+- Rebuild this file after SDK changes: `pnpm --filter @mebius/web build:standalone`.
