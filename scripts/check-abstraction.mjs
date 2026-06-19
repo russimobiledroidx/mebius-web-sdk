@@ -33,6 +33,10 @@ function isPublicArtifact(path) {
   // In build output, only the published type declarations are public surface.
   // Bundled .js/.map are implementation and are not part of the API contract.
   if (path.split(sep).includes("dist")) return path.endsWith(".d.ts");
+  // The single-file standalone bundle inlines third-party code (the scale-mode
+  // engine), which legitimately contains protocol strings — it is compiled
+  // output, not the API contract, so only its docs are scanned, not the .js.
+  if (path.split(sep).includes("standalone") && !path.endsWith(".md")) return false;
   return true;
 }
 

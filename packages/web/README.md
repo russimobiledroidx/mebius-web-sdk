@@ -57,6 +57,23 @@ Via CDN (UMD global `Mebius`) — hanya tersedia setelah publish ke registry/CDN
 </script>
 ```
 
+### Single-file drop-in (PHP / plain HTML, no build)
+
+For PHP or any plain-HTML project: download ONE self-contained file and add a
+`<script>` tag — no npm, no bundler (like `ZegoExpressWebRTC.js`). The scale
+engine is bundled in; zero external deps. `Mebius` becomes a global.
+
+```html
+<script src="mebius.min.js"></script>
+<script>
+  Mebius.init({ appId: "app_123", gateway: "https://gateway.mebius.io" });
+  const client = Mebius.connect({ token }); // token from your backend
+</script>
+```
+
+File + full PHP example: [`standalone/`](./standalone/). Raw download:
+`https://raw.githubusercontent.com/russimobiledroidx/mebius-web-sdk/v0.1.0/packages/web/standalone/mebius.min.js`
+
 ## Quick Start
 
 ### a. Auth

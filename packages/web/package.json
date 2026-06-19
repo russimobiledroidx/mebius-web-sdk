@@ -23,7 +23,8 @@
     "directory": "packages/web"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node scripts/build-standalone.mjs",
+    "build:standalone": "node scripts/build-standalone.mjs",
     "prepack": "tsup",
     "test": "vitest run",
     "test:watch": "vitest",
