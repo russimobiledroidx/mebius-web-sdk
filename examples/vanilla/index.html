@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mebius — Vanilla smoke test</title>
+  </head>
+  <body>
+    <h1>Mebius vanilla smoke test</h1>
+
+    <section>
+      <h2>Broadcast</h2>
+      <video id="preview" autoplay muted playsinline width="320"></video>
+      <div>
+        <button id="go-live">Go live</button>
+        <button id="stop-live">Stop</button>
+        <button id="flip">Flip camera</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Watch</h2>
+      <video id="viewer" autoplay playsinline width="320"></video>
+      <div>
+        <button id="play">Play</button>
+        <button id="stop-play">Stop</button>
+      </div>
+    </section>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

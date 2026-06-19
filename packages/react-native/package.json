@@ -1,0 +1,37 @@
+{
+  "name": "@mebius/react-native",
+  "version": "0.1.0",
+  "description": "Mebius Client SDK for React Native — skeleton + native bridge interface (implementation forthcoming).",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-native": ">=0.74"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "react": "^18.3.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": ["mebius", "react-native", "live", "streaming"]
+}
