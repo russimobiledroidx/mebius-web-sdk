@@ -60,8 +60,8 @@ Via CDN (UMD global `Mebius`) — hanya tersedia setelah publish ke registry/CDN
 ### Single-file drop-in (PHP / plain HTML, no build)
 
 For PHP or any plain-HTML project: download ONE self-contained file and add a
-`<script>` tag — no npm, no bundler (like `ZegoExpressWebRTC.js`). The scale
-engine is bundled in; zero external deps. `Mebius` becomes a global.
+`<script>` tag — no npm, no bundler. The scale engine is bundled in; zero
+external deps. `Mebius` becomes a global.
 
 ```html
 <script src="mebius.min.js"></script>

@@ -1,7 +1,7 @@
 # Mebius — single-file JS SDK (drop-in, no build)
 
-One self-contained file, just like `ZegoExpressWebRTC.js`. Download it, drop it
-into your PHP (or any plain HTML) project, add a `<script>` tag — done. No npm,
+One self-contained file. Download it, drop it into your PHP (or any plain HTML)
+project, add a `<script>` tag — done. No npm,
 no bundler, no build step. The scale-mode playback engine is bundled inside, so
 the file has **zero external dependencies**. `Mebius` becomes a global.
 
@@ -42,38 +42,37 @@ player.play(streamId, "#video")  /  broadcaster.start(streamId)
 - **`mode`** = `"low-latency"` (interactive) or `"scale"` (big audience). Mebius
   picks the delivery automatically; you never deal with the transport.
 
-> ⚠️ Security note vs the Zego sample: that code put `ZEGO_SERVER_SECRET` /
-> `secretKey` into the browser `CONFIG`. **Do not do that with Mebius.** The
-> client gets ONLY `appId`, `gateway`, and a short-lived `token`. The secret
+> ⚠️ **Security:** never put your app secret / server secret in the browser.
+> The client gets ONLY `appId`, `gateway`, and a short-lived `token`. The secret
 > stays on your PHP server and is used there to mint the token.
 
 ---
 
-## Coming from Zego? Call mapping
+## Call reference (what each action maps to)
 
-| Zego (`zg`) | Mebius |
+| You want to… | Mebius call |
 |---|---|
-| `new ZegoExpressEngine(appId, server)` | `Mebius.init({ appId, gateway })` |
-| `zg.loginRoom(roomId, token, user)` | `Mebius.connect({ token })` (no separate room login) |
-| `zg.startPlayingStream(streamId)` + `createRemoteStreamView` + `view.play('el')` | `player.play(streamId, "#el")` (one call, renders into the element) |
-| `zg.mutePlayStreamAudio(streamId, true/false)` | `player.setVolume(0)` / `player.setVolume(1)` |
-| `zg.stopPlayingStream` + `zg.logoutRoom` | `player.stop()` (+ `client.disconnect()` to fully leave) |
-| `zg.startPublishingStream` | `broadcaster.start(streamId)` |
-| `window.ZegoExpressEngine` ready-check | `window.Mebius` ready-check (see `waitForMebius`) |
-| status/error strings | `client.on("error", e => …)` with `e.code` |
+| Set up the SDK | `Mebius.init({ appId, gateway })` |
+| Authenticate / connect | `Mebius.connect({ token })` → `client` (no separate room login) |
+| Watch a stream | `player.play(streamId, "#el")` (one call, renders into the element) |
+| Mute / unmute playback | `player.setVolume(0)` / `player.setVolume(1)` |
+| Stop watching / leave | `player.stop()` (+ `client.disconnect()` to fully leave) |
+| Go live (publish) | `broadcaster.start(streamId)` |
+| Wait until the SDK is loaded | check `window.Mebius` (see `waitForMebius`) |
+| Handle errors | `client.on("error", e => …)` with `e.code` |
 
-`roomId` → there is no room concept; use a `streamId`. (If you keyed streams off
-a room like `` `${roomId}_stream` ``, keep that exact convention — just pass the
-resulting string as `streamId`.)
+There is **no room concept** — you address streams by a `streamId` string. If
+you key streams off something like `` `${roomId}_stream` ``, just build that
+string yourself and pass it as `streamId`.
 
 ---
 
-## A. PHP — viewer (mirrors the Zego sample)
+## A. PHP — viewer (full flow)
 
 Server mints the token (secret stays server-side), injects `appId`/`gateway`
-and the token into the page. The JS is the Mebius equivalent of the Zego flow:
-fetch token → connect → play → mute/leave, with a status UI and an SDK-ready
-wait. (jQuery used only for DOM, same as the sample — it is NOT required by Mebius.)
+and the token into the page. Flow: fetch token → connect → play → mute/leave,
+with a status UI and an SDK-ready wait. (jQuery used only for DOM — it is NOT
+required by Mebius.)
 
 ```php
 <?php
@@ -106,7 +105,7 @@ $token   = fetch_mebius_token_for_user();         // your backend mint (server-s
   }
   const hideStatus = () => status.addClass('d-none');
 
-  // Mebius equivalent of waitForZegoSDK
+  // wait until the single-file SDK global is ready
   function waitForMebius(cb, maxAttempts = 50) {
     let n = 0;
     const t = setInterval(() => {

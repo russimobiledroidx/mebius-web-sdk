@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Build the single-file, drop-in standalone bundle (ZegoExpress-style).
+ * Build the single-file, drop-in standalone bundle.
  *
  * Bundles EVERYTHING — including the scale-mode playback engine (hls.js) — into
  * one browser file with no external dependencies, so a PHP/plain-HTML project
