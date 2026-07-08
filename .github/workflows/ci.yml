@@ -39,10 +39,15 @@ jobs:
         run: pnpm check:abstraction
 
   publish:
-    # Placeholder publish job — wired to changesets, disabled until npm token is set.
+    # Publishes to npm via changesets. Runs on main; the publish step is skipped
+    # unless the NPM_TOKEN secret is configured, so CI stays green until then.
+    # To enable publishing: add repo secret NPM_TOKEN (an npm automation token
+    # with publish rights to the @mebius scope).
     needs: build
-    if: github.ref == 'refs/heads/main' && false
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -54,6 +59,11 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
-      - run: pnpm release
+      - name: Publish to npm (changesets)
+        if: ${{ env.NPM_TOKEN != '' }}
+        run: pnpm release
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish skipped (no NPM_TOKEN secret)
+        if: ${{ env.NPM_TOKEN == '' }}
+        run: echo "NPM_TOKEN secret is not set — skipping npm publish. Add it in repo Settings → Secrets to enable."
