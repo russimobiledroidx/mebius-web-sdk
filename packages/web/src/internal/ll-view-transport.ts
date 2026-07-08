@@ -55,13 +55,13 @@ export class WhepViewTransport implements ViewTransport {
     const localSdp = pc.localDescription?.sdp;
     if (!localSdp) throw mebiusError("CONNECTION_FAILED", "Failed to create a local session.");
 
-    const { answerSdp, resourceUrl } = await this.signaling.exchangeSdp(
-      "whep",
+    const { answer, resourceUrl } = await this.signaling.exchangeSession(
+      "view",
       streamId,
       localSdp,
     );
     this.resourceUrl = resourceUrl;
-    await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+    await pc.setRemoteDescription({ type: "answer", sdp: answer });
   }
 
   async stop(): Promise<void> {

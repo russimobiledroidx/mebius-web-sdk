@@ -21,11 +21,17 @@
  */
 import { mebiusError } from "../errors.js";
 
-export type SignalingKind = "whip" | "whep";
+/**
+ * A media session direction. Deliberately neutral vocabulary ("publish" /
+ * "view") so that if a type bundler ever inlines this into the public `.d.ts`
+ * (e.g. via a private field reference), no wire-protocol term leaks to clients.
+ * The concrete path segment is derived inside {@link SignalingClient} only.
+ */
+export type SessionKind = "publish" | "view";
 
-export interface SdpExchangeResult {
-  /** The remote SDP answer. */
-  answerSdp: string;
+export interface SessionResult {
+  /** The remote session answer returned by the gateway. */
+  answer: string;
   /** Resource URL to DELETE on teardown, if the gateway returned one. */
   resourceUrl: string | null;
 }
@@ -68,25 +74,32 @@ export class SignalingClient {
     return this.withToken(`${this.base()}/flv/${encodeURIComponent(streamId)}.flv`);
   }
 
-  // Performs the SDP offer/answer exchange for a publish (WHIP) or low-latency
-  // view (WHEP) session. Protocol detail kept in line comments so it never
-  // leaks into the bundled public .d.ts.
+  // Maps a neutral session kind to the concrete signaling path segment. This
+  // mapping (publish -> WHIP, view -> WHEP) lives ONLY in this method body, so
+  // the protocol names never appear in any exported type signature.
+  private pathFor(kind: SessionKind): string {
+    return kind === "publish" ? "whip" : "whep";
+  }
+
+  // Performs the offer/answer exchange for a publish or a low-latency view
+  // session. Protocol detail kept inside the method body so it never leaks into
+  // the bundled public .d.ts.
   /**
    * Run the session offer/answer exchange. Throws a {@link MebiusError} with a
    * Mebius-flavored code on failure — never the raw protocol name.
    */
-  async exchangeSdp(
-    kind: SignalingKind,
+  async exchangeSession(
+    kind: SessionKind,
     streamId: string,
-    offerSdp: string,
-  ): Promise<SdpExchangeResult> {
-    const url = this.withToken(`${this.base()}/${kind}/${encodeURIComponent(streamId)}`);
+    offer: string,
+  ): Promise<SessionResult> {
+    const url = this.withToken(`${this.base()}/${this.pathFor(kind)}/${encodeURIComponent(streamId)}`);
     let res: Response;
     try {
       res = await fetch(url, {
         method: "POST",
         headers: this.headers("application/sdp"),
-        body: offerSdp,
+        body: offer,
       });
     } catch (cause) {
       throw mebiusError("CONNECTION_FAILED", undefined, cause);
@@ -102,10 +115,10 @@ export class SignalingClient {
       throw mebiusError("CONNECTION_FAILED", `Mebius gateway returned ${res.status}.`);
     }
 
-    const answerSdp = await res.text();
+    const answer = await res.text();
     const location = res.headers.get("Location");
     const resourceUrl = location ? new URL(location, url).toString() : null;
-    return { answerSdp, resourceUrl };
+    return { answer, resourceUrl };
   }
 
   /** Tear down a previously-created session resource. Best-effort. */

@@ -21,7 +21,7 @@ npm i @mebius-io/web
 ```
 
 Package berisi `dist/` (ESM + CJS + UMD + types) dan menarik dependency runtime
-(`hls.js`) otomatis. Tidak perlu build di sisi consumer.
+playback-nya otomatis. Tidak perlu build di sisi consumer.
 
 ```ts
 const { Mebius } = require("@mebius-io/web"); // CJS — works
@@ -191,8 +191,9 @@ export function useWatch(streamId: string) {
 
 ### Vite
 
-Tidak ada config khusus. ESM langsung jalan; `hls.js` di-load lazy hanya saat
-mode `"scale"` dipakai, jadi tidak menambah bundle low-latency.
+Tidak ada config khusus. ESM langsung jalan; engine playback untuk mode
+`"scale"` di-load lazy hanya saat mode itu dipakai, jadi tidak menambah bundle
+low-latency.
 
 ## API Reference
 
