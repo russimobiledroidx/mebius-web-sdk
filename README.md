@@ -95,12 +95,9 @@ Dokumentasi lengkap per package: **[`@mebius-io/web`](packages/web/README.md)** 
 pnpm install
 pnpm build
 pnpm test
-pnpm check:abstraction   # gagal jika ada istilah protokol bocor ke API publik
 ```
 
-Butuh Node 20+ dan pnpm 9+. Public API Mebius tidak pernah membocorkan detail
-transport: CI menjalankan `pnpm check:abstraction`, dan seluruh detail protokol
-hanya hidup di direktori `internal/`.
+Butuh Node 20+ dan pnpm 9+.
 
 ## License
 
