@@ -12,27 +12,17 @@ yang sama seperti [`@mebius-io/web`](../web); kerja sesungguhnya didelegasikan k
 
 ## Install
 
-Repo ini **private** (belum dipublish ke npm). Cara yang terbukti jalan adalah
-**tarball**. Package ini **tidak** punya dependency internal (`@mebius-io/web`),
-jadi bisa di-install standalone:
-
-```bash
-# Maintainer (di repo SDK):
-pnpm --filter @mebius-io/react-native build
-pnpm --filter @mebius-io/react-native pack   # -> mebius-react-native-0.1.0.tgz
-
-# Consumer:
-npm i ./mebius-react-native-0.1.0.tgz react react-native
-```
-
-Setelah dipublish ke registry npm (opsi masa depan):
+Sudah **live di npm** (public). Tanpa dependency internal, jadi install
+standalone:
 
 ```bash
 npm i @mebius-io/react-native react react-native
+# atau: pnpm add @mebius-io/react-native react react-native
 ```
 
-> Detail distribusi private (kenapa git install monorepo subpackage tidak
-> dipakai) ada di README [`@mebius-io/web`](../web#distribusi-private-github--tarball).
+> Butuh install offline / tanpa registry? Pakai tarball
+> (`pnpm --filter @mebius-io/react-native pack` → `npm i ./mebius-react-native-0.1.0.tgz`).
+> Detail di README [`@mebius-io/web`](../web#distribusi-via-tarball-offline--tanpa-registry).
 
 ## Bridge interface
 

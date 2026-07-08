@@ -13,42 +13,22 @@ SDK web Mebius untuk live streaming — install, ikuti docs, hit API.
 
 ## Install
 
-> Repo ini **private** dan belum dipublish ke npm registry / domain manapun.
-> Metode install yang terbukti jalan adalah **tarball** (di bawah). Lihat
-> [Distribusi private](#distribusi-private-github--tarball) untuk detail +
-> caveat git install.
-
-### Tarball (cara utama, paling reliable)
-
-Maintainer membuat tarball sekali per rilis, lalu consumer install dari file:
-
-```bash
-# Maintainer (di repo SDK):
-pnpm --filter @mebius-io/web build
-pnpm --filter @mebius-io/web pack            # -> packages/web/mebius-web-0.1.0.tgz
-
-# Consumer (di project kamu):
-npm i ./mebius-web-0.1.0.tgz
-# atau: pnpm add ./mebius-web-0.1.0.tgz / yarn add ./mebius-web-0.1.0.tgz
-```
-
-Tarball sudah berisi `dist/` (ESM + CJS + UMD + types) dan menarik dependency
-runtime (`hls.js`) otomatis. Tidak perlu build di sisi consumer.
-
-```ts
-const { Mebius } = require("@mebius-io/web"); // CJS — works
-import { Mebius } from "@mebius-io/web";       // ESM — works
-```
-
-Setelah package dipublish ke npm registry (opsi masa depan, npm tidak butuh
-domain):
+Package sudah **live di npm registry** (public). Install seperti biasa:
 
 ```bash
 npm i @mebius-io/web
 # atau: pnpm add @mebius-io/web / yarn add @mebius-io/web
 ```
 
-Via CDN (UMD global `Mebius`) — hanya tersedia setelah publish ke registry/CDN:
+Package berisi `dist/` (ESM + CJS + UMD + types) dan menarik dependency runtime
+(`hls.js`) otomatis. Tidak perlu build di sisi consumer.
+
+```ts
+const { Mebius } = require("@mebius-io/web"); // CJS — works
+import { Mebius } from "@mebius-io/web";       // ESM — works
+```
+
+Via CDN (UMD global `Mebius`):
 
 ```html
 <script src="https://unpkg.com/@mebius-io/web/dist/index.global.js"></script>
@@ -56,6 +36,9 @@ Via CDN (UMD global `Mebius`) — hanya tersedia setelah publish ke registry/CDN
   Mebius.Mebius.init({ appId: "app_123", gateway: "https://gateway.mebius.io" });
 </script>
 ```
+
+> Butuh install offline / tanpa registry? Lihat
+> [Distribusi via tarball](#distribusi-via-tarball-offline--tanpa-registry).
 
 ### Single-file drop-in (PHP / plain HTML, no build)
 
@@ -281,14 +264,10 @@ client.on("error", (e) => {
 - **Autoplay:** browser memblok autoplay dengan suara. Mulai playback setelah
   interaksi user, atau set `muted` dulu lalu unmute via `setVolume`.
 
-## Distribusi private (GitHub / tarball)
+## Distribusi via tarball (offline / tanpa registry)
 
-SDK ini hidup di **monorepo private** (`russimobiledroidx/mebius-web-sdk`)
-dengan 3 package: `@mebius-io/web` (core, tanpa dependency internal), `@mebius-io/react`,
-`@mebius-io/react-native`. Tidak ada registry/domain publik. Berikut metode install
-beserta tingkat keandalannya — apa adanya, tanpa janji palsu.
-
-### ✅ Tarball — reliable (cara utama)
+Package sudah live di npm (`npm i @mebius-io/web`). Bagian ini hanya untuk kasus
+**offline / air-gapped** atau saat kamu sengaja tidak mau lewat registry.
 
 ```bash
 # 1. Maintainer build + pack semua package sekaligus (di repo SDK):
@@ -301,47 +280,18 @@ pnpm pack:all
 npm i ./mebius-web-0.1.0.tgz
 ```
 
-Selalu jalan untuk repo private karena tidak menyentuh registry sama sekali.
-`@mebius-io/web` self-contained (tidak punya workspace dep), jadi paling bersih.
+`@mebius-io/web` self-contained (tanpa workspace dep), jadi paling bersih untuk
+install tarball standalone.
 
-### ⚠️ git install — TIDAK reliable untuk monorepo subpackage
+### Cross-package dependency (react)
 
-`npm i 'github:russimobiledroidx/mebius-web-sdk'` **tidak** bisa dipakai untuk
-menginstall satu sub-package: npm/pnpm meng-clone seluruh repo dan hanya membaca
-`package.json` di root, yang `private: true` dan bukan salah satu dari ketiga
-package. npm juga tidak mendukung pemilihan sub-direktori untuk git dependency
-secara native. Jadi metode ini **tidak didukung** di sini — pakai tarball.
-
-(Catatan: tool pihak ketiga seperti `gitpkg` mem-publish subdir sebagai git URL,
-tetapi **tidak bekerja untuk repo private**. Karena itu tarball adalah jalur
-utama.)
-
-### Cross-package dependency (react / react-native)
-
-`@mebius-io/react` bergantung ke `@mebius-io/web`. Saat di-pack, pnpm menulis ulang
-`workspace:*` menjadi versi konkret (`"@mebius-io/web": "0.1.0"`) yang tidak ada di
-registry manapun untuk repo private ini. Akibatnya, **install tarball react
-sendirian akan gagal** (npm mencoba mengambil `@mebius-io/web@0.1.0` dari registry).
-
-Solusi: install kedua tarball dalam **satu perintah** supaya npm memuaskan
-`@mebius-io/web@0.1.0` dari tarball lokal yang kamu sediakan:
+`@mebius-io/react` bergantung ke `@mebius-io/web`. Lewat npm registry ini otomatis
+teratasi. Untuk **tarball offline**, `workspace:*` ditulis ulang jadi versi
+konkret (`"@mebius-io/web": "0.1.0"`); install kedua tarball dalam satu perintah
+agar dep-nya terpenuhi lokal:
 
 ```bash
 npm i ./mebius-web-0.1.0.tgz ./mebius-react-0.1.0.tgz react
-```
-
-`@mebius-io/web` (core) dan `@mebius-io/react-native` (skeleton, tanpa dep internal)
-bisa di-install standalone tanpa kendala ini.
-
-### Opsi masa depan (lebih mulus): npm publish / GitHub Packages
-
-Tidak seperti Maven Central, **npm tidak punya syarat domain**. Begitu siap,
-publish ke registry npm privat atau **GitHub Packages** menghapus seluruh dance
-tarball:
-
-```bash
-pnpm release   # turbo build + changeset publish
-# consumer cukup: npm i @mebius-io/web
 ```
 
 ## Versioning & changelog
