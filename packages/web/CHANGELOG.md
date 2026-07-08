@@ -1,5 +1,11 @@
 # @mebius-io/web
 
+## 0.1.2
+
+### Patch Changes
+
+- Docs: simplify @mebius-io/react install to a single `npm i @mebius-io/react` (dependency @mebius-io/web + peer react auto-resolve from the registry); the two-tarball step applies only to offline installs.
+
 ## 0.1.1
 
 ### Patch Changes

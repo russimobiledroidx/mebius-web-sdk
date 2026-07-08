@@ -9,17 +9,17 @@ README `@mebius-io/web`; di sini fokus API hooks.
 
 ## Install
 
-Sudah **live di npm** (public). `@mebius-io/react` butuh `@mebius-io/web` (peer)
-dan `react`:
+Sudah **live di npm** (public). Satu perintah cukup — `@mebius-io/web`
+(dependency) dan `react` (peer) ikut otomatis dari registry:
 
 ```bash
-npm i @mebius-io/react @mebius-io/web react
-# atau: pnpm add @mebius-io/react @mebius-io/web react
+npm i @mebius-io/react
+# atau: pnpm add @mebius-io/react / yarn add @mebius-io/react
 ```
 
-> Butuh install offline / tanpa registry? Pakai tarball — install kedua tarball
-> (`web` + `react`) dalam satu perintah supaya `@mebius-io/web` terpenuhi lokal.
-> Detail di README [`@mebius-io/web`](../web#distribusi-via-tarball-offline--tanpa-registry).
+> Butuh install offline / tanpa registry? Pakai tarball — di mode ini `@mebius-io/web`
+> TIDAK ikut otomatis, jadi install kedua tarball (`web` + `react`) dalam satu
+> perintah. Detail di README [`@mebius-io/web`](../web#distribusi-via-tarball-offline--tanpa-registry).
 
 ## Hooks
 
