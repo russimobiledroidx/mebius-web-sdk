@@ -1,6 +1,6 @@
 {
   "name": "@mebius-io/web",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Mebius Client SDK for the web — live streaming, simple API.",
   "license": "MIT",
   "type": "module",
@@ -15,7 +15,10 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "sideEffects": false,
   "repository": {
     "type": "git",
@@ -45,5 +48,12 @@
   "publishConfig": {
     "access": "public"
   },
-  "keywords": ["mebius", "live", "streaming", "webrtc", "video", "sdk"]
+  "keywords": [
+    "mebius",
+    "live",
+    "streaming",
+    "webrtc",
+    "video",
+    "sdk"
+  ]
 }

@@ -6,12 +6,18 @@
  * for scale viewing). None of these terms ever escape `internal/` — the public
  * API speaks only in Mebius vocabulary.
  *
- * The gateway HTTP contract (subject to the backend, mebius-stream-engine):
- *   - Publish:           POST  {gateway}/whip/{streamId}   (application/sdp)
- *   - View low-latency:  POST  {gateway}/whep/{streamId}   (application/sdp)
- *   - View scale:        GET   {gateway}/hls/{streamId}/index.m3u8
+ * The gateway HTTP contract (mebius-stream-engine public edge):
+ *   - Publish:           POST  {gateway}/whip/{streamId}?token=<jwt>   (application/sdp)
+ *   - View low-latency:  POST  {gateway}/whep/{streamId}?token=<jwt>   (application/sdp)
+ *   - View scale:        GET   {gateway}/live/{streamId}/index.m3u8?token=<jwt>
  *   - Teardown:          DELETE {resourceUrl}
- * Every request carries `Authorization: Bearer <token>`.
+ *
+ * The engine validates the token from the `?token=` QUERY parameter (its
+ * MediaMTX auth hook + HLS playback gate both read the query, not a header).
+ * We still send `Authorization: Bearer <token>` for gateways that prefer it,
+ * but the query token is what the engine actually enforces. HLS segment URLs
+ * inside the playlist inherit `?token=` automatically (the engine rewrites the
+ * m3u8), so no extra header is needed for segment fetches.
  */
 import { mebiusError } from "../errors.js";
 
@@ -40,10 +46,18 @@ export class SignalingClient {
     return h;
   }
 
-  // Build the playlist URL used by scale-mode playback (HLS path, hidden).
+  /** Append the access token as a query param (the form the engine enforces). */
+  private withToken(url: string): string {
+    const sep = url.includes("?") ? "&" : "?";
+    return `${url}${sep}token=${encodeURIComponent(this.token)}`;
+  }
+
+  // Build the playlist URL used by scale-mode playback (HLS path, hidden). The
+  // engine serves the playlist under /live/{id}/index.m3u8 and requires the
+  // token in the query; segment URIs in the playlist inherit it automatically.
   /** Playlist URL for scale-mode playback. */
   scalePlaylistUrl(streamId: string): string {
-    return `${this.base()}/hls/${encodeURIComponent(streamId)}/index.m3u8`;
+    return this.withToken(`${this.base()}/live/${encodeURIComponent(streamId)}/index.m3u8`);
   }
 
   // Build the HTTP-FLV pull URL used by balanced-mode playback. Served by the
@@ -51,7 +65,7 @@ export class SignalingClient {
   // engine — MediaMTX itself does not vend HTTP-FLV. Hidden from the public API.
   /** Pull URL for balanced-mode playback. */
   balancedStreamUrl(streamId: string): string {
-    return `${this.base()}/flv/${encodeURIComponent(streamId)}.flv`;
+    return this.withToken(`${this.base()}/flv/${encodeURIComponent(streamId)}.flv`);
   }
 
   // Performs the SDP offer/answer exchange for a publish (WHIP) or low-latency
@@ -66,7 +80,7 @@ export class SignalingClient {
     streamId: string,
     offerSdp: string,
   ): Promise<SdpExchangeResult> {
-    const url = `${this.base()}/${kind}/${encodeURIComponent(streamId)}`;
+    const url = this.withToken(`${this.base()}/${kind}/${encodeURIComponent(streamId)}`);
     let res: Response;
     try {
       res = await fetch(url, {

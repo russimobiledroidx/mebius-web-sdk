@@ -58,7 +58,10 @@ async function exchangeSdp(
   offerSdp: string,
 ): Promise<SdpExchangeResult> {
   const base = gateway.replace(/\/+$/, "");
-  const url = `${base}/${kind}/${encodeURIComponent(streamId)}`;
+  // The engine validates the token from the ?token= query (its auth hook reads
+  // the query, not the header). Bearer is kept as a courtesy for gateways that
+  // prefer it, but the query token is what the engine enforces.
+  const url = `${base}/${kind}/${encodeURIComponent(streamId)}?token=${encodeURIComponent(token)}`;
   let res: Response;
   try {
     res = await fetch(url, {

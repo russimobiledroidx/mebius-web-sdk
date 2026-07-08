@@ -33657,17 +33657,24 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       if (contentType) h["Content-Type"] = contentType;
       return h;
     }
-    // Build the playlist URL used by scale-mode playback (HLS path, hidden).
+    /** Append the access token as a query param (the form the engine enforces). */
+    withToken(url) {
+      const sep = url.includes("?") ? "&" : "?";
+      return `${url}${sep}token=${encodeURIComponent(this.token)}`;
+    }
+    // Build the playlist URL used by scale-mode playback (HLS path, hidden). The
+    // engine serves the playlist under /live/{id}/index.m3u8 and requires the
+    // token in the query; segment URIs in the playlist inherit it automatically.
     /** Playlist URL for scale-mode playback. */
     scalePlaylistUrl(streamId) {
-      return `${this.base()}/hls/${encodeURIComponent(streamId)}/index.m3u8`;
+      return this.withToken(`${this.base()}/live/${encodeURIComponent(streamId)}/index.m3u8`);
     }
     // Build the HTTP-FLV pull URL used by balanced-mode playback. Served by the
     // CDN (CDN_PULL_FORMAT `.flv`) or an SRS/nginx-rtmp edge in front of the
     // engine — MediaMTX itself does not vend HTTP-FLV. Hidden from the public API.
     /** Pull URL for balanced-mode playback. */
     balancedStreamUrl(streamId) {
-      return `${this.base()}/flv/${encodeURIComponent(streamId)}.flv`;
+      return this.withToken(`${this.base()}/flv/${encodeURIComponent(streamId)}.flv`);
     }
     // Performs the SDP offer/answer exchange for a publish (WHIP) or low-latency
     // view (WHEP) session. Protocol detail kept in line comments so it never
@@ -33677,7 +33684,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      * Mebius-flavored code on failure — never the raw protocol name.
      */
     async exchangeSdp(kind, streamId, offerSdp) {
-      const url = `${this.base()}/${kind}/${encodeURIComponent(streamId)}`;
+      const url = this.withToken(`${this.base()}/${kind}/${encodeURIComponent(streamId)}`);
       let res;
       try {
         res = await fetch(url, {

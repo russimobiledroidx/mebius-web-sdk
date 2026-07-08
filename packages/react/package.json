@@ -1,6 +1,6 @@
 {
   "name": "@mebius-io/react",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "React hooks for the Mebius Web SDK — a thin layer over @mebius-io/web.",
   "license": "MIT",
   "type": "module",
@@ -14,7 +14,10 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "sideEffects": false,
   "repository": {
     "type": "git",
@@ -41,5 +44,11 @@
   "publishConfig": {
     "access": "public"
   },
-  "keywords": ["mebius", "react", "live", "streaming", "hooks"]
+  "keywords": [
+    "mebius",
+    "react",
+    "live",
+    "streaming",
+    "hooks"
+  ]
 }
