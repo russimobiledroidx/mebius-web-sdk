@@ -1,7 +1,7 @@
 /**
- * Public types for @mebius/react-native.
+ * Public types for @mebius-io/react-native.
  *
- * Identical contract to @mebius/web (same names), kept local so this package
+ * Identical contract to @mebius-io/web (same names), kept local so this package
  * carries no browser dependency. Transport details are never named here.
  */
 export interface MebiusInitOptions {

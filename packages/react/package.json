@@ -1,7 +1,7 @@
 {
-  "name": "@mebius/react",
+  "name": "@mebius-io/react",
   "version": "0.1.0",
-  "description": "React hooks for the Mebius Web SDK — a thin layer over @mebius/web.",
+  "description": "React hooks for the Mebius Web SDK — a thin layer over @mebius-io/web.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -29,7 +29,7 @@
     "lint": "eslint src"
   },
   "dependencies": {
-    "@mebius/web": "workspace:*"
+    "@mebius-io/web": "workspace:*"
   },
   "peerDependencies": {
     "react": ">=18"

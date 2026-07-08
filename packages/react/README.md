@@ -1,17 +1,17 @@
-# @mebius/react
+# @mebius-io/react
 
 React hooks untuk Mebius Web SDK — lapisan tipis di atas
-[`@mebius/web`](../web). Konsep inti (auth, mode, events, error code) ada di
-README `@mebius/web`; di sini fokus API hooks.
+[`@mebius-io/web`](../web). Konsep inti (auth, mode, events, error code) ada di
+README `@mebius-io/web`; di sini fokus API hooks.
 
-[![npm version](https://img.shields.io/badge/npm-%40mebius%2Freact-blue)](https://www.npmjs.com/package/@mebius/react)
+[![npm version](https://img.shields.io/badge/npm-%40mebius%2Freact-blue)](https://www.npmjs.com/package/@mebius-io/react)
 [![license](https://img.shields.io/badge/license-MIT-green)](../../LICENSE)
 
 ## Install
 
 Repo ini **private** (belum dipublish ke npm). Cara yang terbukti jalan adalah
-**tarball**. Karena `@mebius/react` bergantung ke `@mebius/web`, install **kedua
-tarball dalam satu perintah** supaya dependency `@mebius/web` terpenuhi dari
+**tarball**. Karena `@mebius-io/react` bergantung ke `@mebius-io/web`, install **kedua
+tarball dalam satu perintah** supaya dependency `@mebius-io/web` terpenuhi dari
 tarball lokal (kalau tidak, npm akan mencoba mengambilnya dari registry dan
 gagal):
 
@@ -26,11 +26,11 @@ npm i ./mebius-web-0.1.0.tgz ./mebius-react-0.1.0.tgz react
 Setelah dipublish ke registry npm (opsi masa depan):
 
 ```bash
-npm i @mebius/react @mebius/web react
+npm i @mebius-io/react @mebius-io/web react
 ```
 
 > Detail distribusi private (kenapa git install tidak dipakai, perilaku
-> `workspace:*` saat pack) ada di README [`@mebius/web`](../web#distribusi-private-github--tarball).
+> `workspace:*` saat pack) ada di README [`@mebius-io/web`](../web#distribusi-private-github--tarball).
 
 ## Hooks
 
@@ -43,7 +43,7 @@ npm i @mebius/react @mebius/web react
 ## Broadcast
 
 ```tsx
-import { useMebius, useBroadcaster } from "@mebius/react";
+import { useMebius, useBroadcaster } from "@mebius-io/react";
 
 function Broadcast({ token }: { token: string }) {
   const { client } = useMebius({ appId: "app_123", gateway: "https://gateway.mebius.io", token });
@@ -64,7 +64,7 @@ function Broadcast({ token }: { token: string }) {
 ## Watch
 
 ```tsx
-import { useMebius, usePlayer } from "@mebius/react";
+import { useMebius, usePlayer } from "@mebius-io/react";
 
 function Watch({ token, streamId }: { token: string; streamId: string }) {
   const { client } = useMebius({ appId: "app_123", gateway: "https://gateway.mebius.io", token });

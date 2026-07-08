@@ -1,5 +1,5 @@
 /**
- * Native bridge contract for @mebius/react-native.
+ * Native bridge contract for @mebius-io/react-native.
  *
  * The JS layer in this package is a thin facade. All real work is delegated to
  * a native module (iOS/Android) that implements {@link MebiusNativeBridge}.

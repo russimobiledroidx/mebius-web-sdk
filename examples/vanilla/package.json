@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@mebius/web": "workspace:*"
+    "@mebius-io/web": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.2",

@@ -252,7 +252,7 @@ Same flow, plain DOM:
 - `MebiusError` — errors carry a `.code`: `TOKEN_EXPIRED`, `PERMISSION_DENIED`,
   `CONNECTION_FAILED`, `NOT_CONNECTED`, `STREAM_NOT_FOUND`
 
-### Full API (identical to `@mebius/web`)
+### Full API (identical to `@mebius-io/web`)
 
 | Object | Method | Notes |
 |---|---|---|
@@ -278,4 +278,4 @@ Same flow, plain DOM:
   [mebius-php](https://github.com/russimobiledroidx/mebius-php) SDK
   (`Mebius\TokenIssuer`) or any JWT lib. Never embed the app secret in the page.
 - **`TOKEN_EXPIRED`** → fetch a fresh token from your backend and `connect` again.
-- Rebuild this file after SDK changes: `pnpm --filter @mebius/web build:standalone`.
+- Rebuild this file after SDK changes: `pnpm --filter @mebius-io/web build:standalone`.

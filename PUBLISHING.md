@@ -3,15 +3,15 @@
 This monorepo publishes three public npm packages (kept in lockstep via
 Changesets, `fixed` group):
 
-- `@mebius/web` — core browser SDK
-- `@mebius/react` — React hooks (depends on `@mebius/web`)
-- `@mebius/react-native` — React Native bindings
+- `@mebius-io/web` — core browser SDK
+- `@mebius-io/react` — React hooks (depends on `@mebius-io/web`)
+- `@mebius-io/react-native` — React Native bindings
 
 All three currently sit at `0.1.0`.
 
 ## One-time setup
 
-1. **Own the `@mebius` scope on npm.** The packages are scoped `@mebius/*`, so an
+1. **Own the `@mebius` scope on npm.** The packages are scoped `@mebius-io/*`, so an
    npm **organization named `mebius`** must exist and your account must belong to
    it. Create it (Free plan = unlimited public packages) at
    <https://www.npmjs.com/org/create>.
@@ -44,8 +44,8 @@ pnpm release              # build + changeset publish (public access)
 ## Verify
 
 ```bash
-npm view @mebius/web version          # -> 0.1.0
-npm install @mebius/web               # works standalone; hls.js is pulled in
+npm view @mebius-io/web version          # -> 0.1.0
+npm install @mebius-io/web               # works standalone; hls.js is pulled in
                                       # automatically as an internal dependency
 ```
 
