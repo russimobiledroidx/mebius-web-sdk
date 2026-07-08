@@ -1,6 +1,6 @@
 {
   "name": "@mebius-io/react-native",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Mebius Client SDK for React Native — broadcast and watch, backed by react-native-webrtc.",
   "license": "MIT",
   "type": "module",
@@ -14,7 +14,10 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "sideEffects": false,
   "repository": {
     "type": "git",
@@ -45,5 +48,10 @@
   "publishConfig": {
     "access": "public"
   },
-  "keywords": ["mebius", "react-native", "live", "streaming"]
+  "keywords": [
+    "mebius",
+    "react-native",
+    "live",
+    "streaming"
+  ]
 }

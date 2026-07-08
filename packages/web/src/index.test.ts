@@ -62,6 +62,31 @@ describe("transport auto-selection", () => {
   });
 });
 
+describe("SignalingClient engine contract", () => {
+  it("builds the scale playlist URL under /live with the token in the query", () => {
+    const sig = new SignalingClient("https://engine.example/", "tok123");
+    const url = sig.scalePlaylistUrl("s_abc");
+    expect(url).toBe("https://engine.example/live/s_abc/index.m3u8?token=tok123");
+  });
+
+  it("posts the SDP exchange to /whip|/whep with the token in the query", async () => {
+    const calls: string[] = [];
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return new Response("v=0", { status: 200, headers: { Location: "/whep/s_abc/session1" } });
+    }) as typeof fetch;
+    try {
+      const sig = new SignalingClient("https://engine.example", "tokPLAY");
+      const r = await sig.exchangeSdp("whep", "s_abc", "v=0");
+      expect(calls[0]).toBe("https://engine.example/whep/s_abc?token=tokPLAY");
+      expect(r.resourceUrl).toBe("https://engine.example/whep/s_abc/session1");
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+});
+
 describe("Mebius.init / connect", () => {
   beforeEach(() => Mebius._reset());
 
