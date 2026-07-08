@@ -1,7 +1,7 @@
 {
   "name": "@mebius/react-native",
   "version": "0.1.0",
-  "description": "Mebius Client SDK for React Native — skeleton + native bridge interface (implementation forthcoming).",
+  "description": "Mebius Client SDK for React Native — broadcast and watch, backed by react-native-webrtc.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -30,7 +30,13 @@
   },
   "peerDependencies": {
     "react": ">=18",
-    "react-native": ">=0.74"
+    "react-native": ">=0.74",
+    "react-native-webrtc": ">=118"
+  },
+  "peerDependenciesMeta": {
+    "react-native-webrtc": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/react": "^18.3.18",

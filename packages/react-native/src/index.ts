@@ -1,10 +1,11 @@
 /**
- * @mebius/react-native — skeleton.
+ * @mebius/react-native.
  *
  * Exposes the canonical Mebius API surface. Calls are delegated to a native
- * bridge (see {@link MebiusNativeBridge}). Until the native module ships, the
- * facade throws a clear `NOT_IMPLEMENTED` MebiusError so integrators get an
- * unambiguous signal rather than a silent no-op.
+ * bridge (see {@link MebiusNativeBridge}). A ready-made bridge backed by
+ * `react-native-webrtc` ships in this package — register it once at startup
+ * with `registerWebRTCBridge(RNWebRTC)`. If no bridge is registered, the facade
+ * throws a clear `NOT_IMPLEMENTED` MebiusError rather than a silent no-op.
  */
 import { getNativeBridge, type NativeHandle } from "./bridge.js";
 import type {
@@ -21,6 +22,8 @@ export {
   type MebiusNativeBridge,
   type NativeHandle,
 } from "./bridge.js";
+export { registerWebRTCBridge, createWebRTCBridge } from "./webrtc-bridge.js";
+export type { RNWebRTCModule } from "./rn-webrtc.js";
 
 export class MebiusError extends Error {
   readonly code: MebiusErrorCode;
@@ -36,8 +39,8 @@ function bridgeOrThrow() {
   if (!b) {
     throw new MebiusError(
       "NOT_IMPLEMENTED",
-      "The Mebius native module is not installed yet. This is a skeleton package; " +
-        "install/link the native bridge to enable broadcasting and playback.",
+      "No Mebius native bridge is registered. Install react-native-webrtc and call " +
+        "registerWebRTCBridge(RNWebRTC) at startup, or register a custom MebiusNativeBridge.",
     );
   }
   return b;

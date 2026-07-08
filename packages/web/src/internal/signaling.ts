@@ -46,6 +46,14 @@ export class SignalingClient {
     return `${this.base()}/hls/${encodeURIComponent(streamId)}/index.m3u8`;
   }
 
+  // Build the HTTP-FLV pull URL used by balanced-mode playback. Served by the
+  // CDN (CDN_PULL_FORMAT `.flv`) or an SRS/nginx-rtmp edge in front of the
+  // engine — MediaMTX itself does not vend HTTP-FLV. Hidden from the public API.
+  /** Pull URL for balanced-mode playback. */
+  balancedStreamUrl(streamId: string): string {
+    return `${this.base()}/flv/${encodeURIComponent(streamId)}.flv`;
+  }
+
   // Performs the SDP offer/answer exchange for a publish (WHIP) or low-latency
   // view (WHEP) session. Protocol detail kept in line comments so it never
   // leaks into the bundled public .d.ts.
