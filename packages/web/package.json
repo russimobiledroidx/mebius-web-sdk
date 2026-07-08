@@ -1,5 +1,5 @@
 {
-  "name": "@mebius/web",
+  "name": "@mebius-io/web",
   "version": "0.1.0",
   "description": "Mebius Client SDK for the web — live streaming, simple API.",
   "license": "MIT",

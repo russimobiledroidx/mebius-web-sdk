@@ -38,7 +38,7 @@ importers:
 
   examples/vanilla:
     dependencies:
-      '@mebius/web':
+      '@mebius-io/web':
         specifier: workspace:*
         version: link:../../packages/web
     devDependencies:
@@ -51,7 +51,7 @@ importers:
 
   packages/react:
     dependencies:
-      '@mebius/web':
+      '@mebius-io/web':
         specifier: workspace:*
         version: link:../web
     devDependencies:

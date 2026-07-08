@@ -8,7 +8,7 @@
  *
  * ```ts
  * import * as RNWebRTC from "react-native-webrtc";
- * import { registerWebRTCBridge } from "@mebius/react-native";
+ * import { registerWebRTCBridge } from "@mebius-io/react-native";
  * registerWebRTCBridge(RNWebRTC);
  * ```
  *
@@ -42,7 +42,7 @@ class BridgeError extends Error {
 // --- Gateway signaling ----------------------------------------------------
 //
 // The one place in this package that speaks to the wire transport. Same HTTP
-// contract as @mebius/web: POST the SDP offer as application/sdp with the
+// contract as @mebius-io/web: POST the SDP offer as application/sdp with the
 // bearer token; the gateway replies with the SDP answer.
 
 interface SdpExchangeResult {

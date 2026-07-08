@@ -6,9 +6,9 @@ Mebius Client SDK untuk web — live streaming yang gampang dipakai. Install, ik
 
 | Package | Path | Deskripsi |
 |---|---|---|
-| [`@mebius/web`](packages/web) | `packages/web` | Core SDK, vanilla TypeScript (browser WebRTC). |
-| [`@mebius/react`](packages/react) | `packages/react` | React hooks tipis di atas `@mebius/web`. |
-| [`@mebius/react-native`](packages/react-native) | `packages/react-native` | Skeleton + bridge interface (native menyusul). |
+| [`@mebius-io/web`](packages/web) | `packages/web` | Core SDK, vanilla TypeScript (browser WebRTC). |
+| [`@mebius-io/react`](packages/react) | `packages/react` | React hooks tipis di atas `@mebius-io/web`. |
+| [`@mebius-io/react-native`](packages/react-native) | `packages/react-native` | Skeleton + bridge interface (native menyusul). |
 
 ## Develop
 

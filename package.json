@@ -2,7 +2,7 @@
   "name": "mebius-web-sdk",
   "version": "0.1.0",
   "private": true,
-  "description": "Mebius Client SDK for the web — monorepo (@mebius/web, @mebius/react, @mebius/react-native)",
+  "description": "Mebius Client SDK for the web — monorepo (@mebius-io/web, @mebius-io/react, @mebius-io/react-native)",
   "packageManager": "pnpm@9.15.0",
   "engines": {
     "node": ">=20"

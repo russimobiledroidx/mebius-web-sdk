@@ -7,5 +7,5 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   target: "es2020",
-  external: ["react", "@mebius/web"],
+  external: ["react", "@mebius-io/web"],
 });

@@ -1,5 +1,5 @@
 /**
- * @mebius/react-native.
+ * @mebius-io/react-native.
  *
  * Exposes the canonical Mebius API surface. Calls are delegated to a native
  * bridge (see {@link MebiusNativeBridge}). A ready-made bridge backed by

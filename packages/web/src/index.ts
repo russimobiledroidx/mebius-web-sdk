@@ -1,5 +1,5 @@
 /**
- * @mebius/web — Mebius Client SDK for the web.
+ * @mebius-io/web — Mebius Client SDK for the web.
  *
  * Public surface only. Everything under `internal/` is private and is never
  * re-exported here.

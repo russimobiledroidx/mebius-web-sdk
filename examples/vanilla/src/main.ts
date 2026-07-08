@@ -1,11 +1,11 @@
 /**
- * Minimal internal smoke test for @mebius/web.
+ * Minimal internal smoke test for @mebius-io/web.
  *
  * Point GATEWAY at a running Mebius gateway (or a dummy gateway during dev) and
  * supply a token from your backend. This file exercises the full public API
  * surface without ever touching transport details.
  */
-import { Mebius } from "@mebius/web";
+import { Mebius } from "@mebius-io/web";
 
 const APP_ID = "app_demo";
 const GATEWAY = "http://localhost:8787"; // dummy gateway for local dev

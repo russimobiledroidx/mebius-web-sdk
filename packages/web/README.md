@@ -1,8 +1,8 @@
-# @mebius/web
+# @mebius-io/web
 
 SDK web Mebius untuk live streaming — install, ikuti docs, hit API.
 
-[![npm version](https://img.shields.io/badge/npm-%40mebius%2Fweb-blue)](https://www.npmjs.com/package/@mebius/web)
+[![npm version](https://img.shields.io/badge/npm-%40mebius%2Fweb-blue)](https://www.npmjs.com/package/@mebius-io/web)
 [![license](https://img.shields.io/badge/license-MIT-green)](../../LICENSE)
 
 ## Requirements
@@ -24,8 +24,8 @@ Maintainer membuat tarball sekali per rilis, lalu consumer install dari file:
 
 ```bash
 # Maintainer (di repo SDK):
-pnpm --filter @mebius/web build
-pnpm --filter @mebius/web pack            # -> packages/web/mebius-web-0.1.0.tgz
+pnpm --filter @mebius-io/web build
+pnpm --filter @mebius-io/web pack            # -> packages/web/mebius-web-0.1.0.tgz
 
 # Consumer (di project kamu):
 npm i ./mebius-web-0.1.0.tgz
@@ -36,22 +36,22 @@ Tarball sudah berisi `dist/` (ESM + CJS + UMD + types) dan menarik dependency
 runtime (`hls.js`) otomatis. Tidak perlu build di sisi consumer.
 
 ```ts
-const { Mebius } = require("@mebius/web"); // CJS — works
-import { Mebius } from "@mebius/web";       // ESM — works
+const { Mebius } = require("@mebius-io/web"); // CJS — works
+import { Mebius } from "@mebius-io/web";       // ESM — works
 ```
 
 Setelah package dipublish ke npm registry (opsi masa depan, npm tidak butuh
 domain):
 
 ```bash
-npm i @mebius/web
-# atau: pnpm add @mebius/web / yarn add @mebius/web
+npm i @mebius-io/web
+# atau: pnpm add @mebius-io/web / yarn add @mebius-io/web
 ```
 
 Via CDN (UMD global `Mebius`) — hanya tersedia setelah publish ke registry/CDN:
 
 ```html
-<script src="https://unpkg.com/@mebius/web/dist/index.global.js"></script>
+<script src="https://unpkg.com/@mebius-io/web/dist/index.global.js"></script>
 <script>
   Mebius.Mebius.init({ appId: "app_123", gateway: "https://gateway.mebius.io" });
 </script>
@@ -85,7 +85,7 @@ File + full PHP example: [`standalone/`](./standalone/). Raw download:
 ### b. Init + connect
 
 ```ts
-import { Mebius } from "@mebius/web";
+import { Mebius } from "@mebius-io/web";
 
 Mebius.init({ appId: "app_123", gateway: "https://gateway.mebius.io" });
 
@@ -145,7 +145,7 @@ delay minimum, `mode: "scale"` untuk audiens besar.
 ESM:
 
 ```ts
-import { Mebius } from "@mebius/web";
+import { Mebius } from "@mebius-io/web";
 Mebius.init({ appId, gateway });
 const client = Mebius.connect({ token });
 ```
@@ -153,7 +153,7 @@ const client = Mebius.connect({ token });
 UMD `<script>`:
 
 ```html
-<script src="https://unpkg.com/@mebius/web/dist/index.global.js"></script>
+<script src="https://unpkg.com/@mebius-io/web/dist/index.global.js"></script>
 <script>
   const { Mebius } = window.Mebius;
   Mebius.init({ appId, gateway });
@@ -162,10 +162,10 @@ UMD `<script>`:
 
 ### React
 
-Pakai `@mebius/react` (hooks tipis di atas package ini):
+Pakai `@mebius-io/react` (hooks tipis di atas package ini):
 
 ```tsx
-import { useMebius, usePlayer } from "@mebius/react";
+import { useMebius, usePlayer } from "@mebius-io/react";
 
 function Watch({ token, streamId }) {
   const { client } = useMebius({ appId, gateway, token });
@@ -190,7 +190,7 @@ export default function Page() {
 
 ```ts
 import { onMounted, onUnmounted, ref } from "vue";
-import { Mebius } from "@mebius/web";
+import { Mebius } from "@mebius-io/web";
 
 export function useWatch(streamId: string) {
   const video = ref<HTMLVideoElement>();
@@ -284,8 +284,8 @@ client.on("error", (e) => {
 ## Distribusi private (GitHub / tarball)
 
 SDK ini hidup di **monorepo private** (`russimobiledroidx/mebius-web-sdk`)
-dengan 3 package: `@mebius/web` (core, tanpa dependency internal), `@mebius/react`,
-`@mebius/react-native`. Tidak ada registry/domain publik. Berikut metode install
+dengan 3 package: `@mebius-io/web` (core, tanpa dependency internal), `@mebius-io/react`,
+`@mebius-io/react-native`. Tidak ada registry/domain publik. Berikut metode install
 beserta tingkat keandalannya — apa adanya, tanpa janji palsu.
 
 ### ✅ Tarball — reliable (cara utama)
@@ -302,7 +302,7 @@ npm i ./mebius-web-0.1.0.tgz
 ```
 
 Selalu jalan untuk repo private karena tidak menyentuh registry sama sekali.
-`@mebius/web` self-contained (tidak punya workspace dep), jadi paling bersih.
+`@mebius-io/web` self-contained (tidak punya workspace dep), jadi paling bersih.
 
 ### ⚠️ git install — TIDAK reliable untuk monorepo subpackage
 
@@ -318,19 +318,19 @@ utama.)
 
 ### Cross-package dependency (react / react-native)
 
-`@mebius/react` bergantung ke `@mebius/web`. Saat di-pack, pnpm menulis ulang
-`workspace:*` menjadi versi konkret (`"@mebius/web": "0.1.0"`) yang tidak ada di
+`@mebius-io/react` bergantung ke `@mebius-io/web`. Saat di-pack, pnpm menulis ulang
+`workspace:*` menjadi versi konkret (`"@mebius-io/web": "0.1.0"`) yang tidak ada di
 registry manapun untuk repo private ini. Akibatnya, **install tarball react
-sendirian akan gagal** (npm mencoba mengambil `@mebius/web@0.1.0` dari registry).
+sendirian akan gagal** (npm mencoba mengambil `@mebius-io/web@0.1.0` dari registry).
 
 Solusi: install kedua tarball dalam **satu perintah** supaya npm memuaskan
-`@mebius/web@0.1.0` dari tarball lokal yang kamu sediakan:
+`@mebius-io/web@0.1.0` dari tarball lokal yang kamu sediakan:
 
 ```bash
 npm i ./mebius-web-0.1.0.tgz ./mebius-react-0.1.0.tgz react
 ```
 
-`@mebius/web` (core) dan `@mebius/react-native` (skeleton, tanpa dep internal)
+`@mebius-io/web` (core) dan `@mebius-io/react-native` (skeleton, tanpa dep internal)
 bisa di-install standalone tanpa kendala ini.
 
 ### Opsi masa depan (lebih mulus): npm publish / GitHub Packages
@@ -341,7 +341,7 @@ tarball:
 
 ```bash
 pnpm release   # turbo build + changeset publish
-# consumer cukup: npm i @mebius/web
+# consumer cukup: npm i @mebius-io/web
 ```
 
 ## Versioning & changelog

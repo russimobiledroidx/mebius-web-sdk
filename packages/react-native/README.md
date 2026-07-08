@@ -1,10 +1,10 @@
-# @mebius/react-native
+# @mebius-io/react-native
 
 Skeleton Mebius Client SDK untuk React Native. Mengekspos API surface kanonik
-yang sama seperti [`@mebius/web`](../web); kerja sesungguhnya didelegasikan ke
+yang sama seperti [`@mebius-io/web`](../web); kerja sesungguhnya didelegasikan ke
 **native bridge** (iOS/Android) yang menyusul.
 
-[![npm version](https://img.shields.io/badge/npm-%40mebius%2Freact--native-blue)](https://www.npmjs.com/package/@mebius/react-native)
+[![npm version](https://img.shields.io/badge/npm-%40mebius%2Freact--native-blue)](https://www.npmjs.com/package/@mebius-io/react-native)
 [![license](https://img.shields.io/badge/license-MIT-green)](../../LICENSE)
 
 > Status: **skeleton**. Tanpa native module terpasang, pemanggilan API melempar
@@ -13,13 +13,13 @@ yang sama seperti [`@mebius/web`](../web); kerja sesungguhnya didelegasikan ke
 ## Install
 
 Repo ini **private** (belum dipublish ke npm). Cara yang terbukti jalan adalah
-**tarball**. Package ini **tidak** punya dependency internal (`@mebius/web`),
+**tarball**. Package ini **tidak** punya dependency internal (`@mebius-io/web`),
 jadi bisa di-install standalone:
 
 ```bash
 # Maintainer (di repo SDK):
-pnpm --filter @mebius/react-native build
-pnpm --filter @mebius/react-native pack   # -> mebius-react-native-0.1.0.tgz
+pnpm --filter @mebius-io/react-native build
+pnpm --filter @mebius-io/react-native pack   # -> mebius-react-native-0.1.0.tgz
 
 # Consumer:
 npm i ./mebius-react-native-0.1.0.tgz react react-native
@@ -28,11 +28,11 @@ npm i ./mebius-react-native-0.1.0.tgz react react-native
 Setelah dipublish ke registry npm (opsi masa depan):
 
 ```bash
-npm i @mebius/react-native react react-native
+npm i @mebius-io/react-native react react-native
 ```
 
 > Detail distribusi private (kenapa git install monorepo subpackage tidak
-> dipakai) ada di README [`@mebius/web`](../web#distribusi-private-github--tarball).
+> dipakai) ada di README [`@mebius-io/web`](../web#distribusi-private-github--tarball).
 
 ## Bridge interface
 
@@ -40,7 +40,7 @@ Native module wajib mengimplementasikan `MebiusNativeBridge` dan memanggil
 `registerNativeBridge(bridge)` saat load. Kontrak (ringkas):
 
 ```ts
-import { registerNativeBridge, type MebiusNativeBridge } from "@mebius/react-native";
+import { registerNativeBridge, type MebiusNativeBridge } from "@mebius-io/react-native";
 
 const bridge: MebiusNativeBridge = {
   init, connect, disconnect,
@@ -58,7 +58,7 @@ protokol yang bocor ke JS.
 ## API (target)
 
 ```ts
-import { Mebius } from "@mebius/react-native";
+import { Mebius } from "@mebius-io/react-native";
 
 Mebius.init({ appId, gateway });
 const client = await Mebius.connect({ token });
@@ -71,7 +71,7 @@ await p.play("my-stream", viewTag);
 ```
 
 Konsep inti (auth/token, mode low-latency vs scale, error code) sama dengan
-`@mebius/web` — lihat README-nya.
+`@mebius-io/web` — lihat README-nya.
 
 ## License
 

@@ -1,7 +1,7 @@
 /**
- * @mebius/react — React hooks for the Mebius Web SDK.
+ * @mebius-io/react — React hooks for the Mebius Web SDK.
  *
- * Thin wrappers over @mebius/web: they manage React lifecycle (effects, refs,
+ * Thin wrappers over @mebius-io/web: they manage React lifecycle (effects, refs,
  * state) but contain no streaming logic of their own.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -13,7 +13,7 @@ import {
   type MebiusPlayer,
   type PlayerOptions,
   type MebiusError,
-} from "@mebius/web";
+} from "@mebius-io/web";
 
 export type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
 
