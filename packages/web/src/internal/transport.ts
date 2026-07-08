@@ -8,6 +8,7 @@ import type { BroadcastStats, PlaybackMode, PlaybackStats } from "../types.js";
 import type { SignalingClient } from "./signaling.js";
 import { WhipPublishTransport } from "./publish-transport.js";
 import { WhepViewTransport } from "./ll-view-transport.js";
+import { FlvViewTransport } from "./balanced-view-transport.js";
 import { HlsViewTransport } from "./scale-view-transport.js";
 
 /** Hidden transport that sends a captured stream to the gateway. */
@@ -39,7 +40,12 @@ export function createViewTransport(
   mode: PlaybackMode,
   signaling: SignalingClient,
 ): ViewTransport {
-  return mode === "low-latency"
-    ? new WhepViewTransport(signaling)
-    : new HlsViewTransport(signaling);
+  switch (mode) {
+    case "low-latency":
+      return new WhepViewTransport(signaling);
+    case "balanced":
+      return new FlvViewTransport(signaling);
+    case "scale":
+      return new HlsViewTransport(signaling);
+  }
 }

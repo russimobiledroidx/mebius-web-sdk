@@ -33335,6 +33335,80 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
   };
 
+  // src/internal/balanced-view-transport.ts
+  var FlvViewTransport = class {
+    constructor(signaling) {
+      this.signaling = signaling;
+      this.player = null;
+      this.video = null;
+      this.endedCb = null;
+      this.bufferingCb = null;
+    }
+    onEnded(cb) {
+      this.endedCb = cb;
+    }
+    onBuffering(cb) {
+      this.bufferingCb = cb;
+    }
+    async start(streamId, video) {
+      var _a;
+      this.video = video;
+      const url = this.signaling.balancedStreamUrl(streamId);
+      video.addEventListener("ended", () => {
+        var _a2;
+        return (_a2 = this.endedCb) == null ? void 0 : _a2.call(this);
+      });
+      video.addEventListener("waiting", () => {
+        var _a2;
+        return (_a2 = this.bufferingCb) == null ? void 0 : _a2.call(this);
+      });
+      let mod;
+      try {
+        const spec = "flv.js";
+        mod = await import(
+          /* @vite-ignore */
+          spec
+        );
+      } catch (cause) {
+        throw mebiusError("CONNECTION_FAILED", "Balanced playback support failed to load.", cause);
+      }
+      const flvjs = mod.default;
+      if (!flvjs.isSupported()) {
+        throw mebiusError("CONNECTION_FAILED", "Balanced playback is not supported in this browser.");
+      }
+      const player = flvjs.createPlayer({ type: "flv", url, isLive: true });
+      this.player = player;
+      player.on((_a = flvjs.Events.ERROR) != null ? _a : "error", () => {
+        var _a2;
+        return (_a2 = this.bufferingCb) == null ? void 0 : _a2.call(this);
+      });
+      player.attachMediaElement(video);
+      player.load();
+      await Promise.resolve(player.play()).catch(() => void 0);
+    }
+    async stop() {
+      if (this.player) {
+        this.player.unload();
+        this.player.detachMediaElement();
+        this.player.destroy();
+        this.player = null;
+      }
+      if (this.video) {
+        this.video.removeAttribute("src");
+        this.video.load();
+      }
+      this.video = null;
+    }
+    async getStats() {
+      if (!this.video) return null;
+      return {
+        bitrateKbps: 0,
+        framesPerSecond: 0,
+        latencyMs: void 0
+      };
+    }
+  };
+
   // src/internal/scale-view-transport.ts
   var HlsViewTransport = class {
     constructor(signaling) {
@@ -33412,7 +33486,14 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     return new WhipPublishTransport(signaling);
   }
   function createViewTransport(mode, signaling) {
-    return mode === "low-latency" ? new WhepViewTransport(signaling) : new HlsViewTransport(signaling);
+    switch (mode) {
+      case "low-latency":
+        return new WhepViewTransport(signaling);
+      case "balanced":
+        return new FlvViewTransport(signaling);
+      case "scale":
+        return new HlsViewTransport(signaling);
+    }
   }
 
   // src/broadcaster.ts
@@ -33580,6 +33661,13 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     /** Playlist URL for scale-mode playback. */
     scalePlaylistUrl(streamId) {
       return `${this.base()}/hls/${encodeURIComponent(streamId)}/index.m3u8`;
+    }
+    // Build the HTTP-FLV pull URL used by balanced-mode playback. Served by the
+    // CDN (CDN_PULL_FORMAT `.flv`) or an SRS/nginx-rtmp edge in front of the
+    // engine — MediaMTX itself does not vend HTTP-FLV. Hidden from the public API.
+    /** Pull URL for balanced-mode playback. */
+    balancedStreamUrl(streamId) {
+      return `${this.base()}/flv/${encodeURIComponent(streamId)}.flv`;
     }
     // Performs the SDP offer/answer exchange for a publish (WHIP) or low-latency
     // view (WHEP) session. Protocol detail kept in line comments so it never
