@@ -69,7 +69,7 @@ describe("SignalingClient engine contract", () => {
     expect(url).toBe("https://engine.example/live/s_abc/index.m3u8?token=tok123");
   });
 
-  it("posts the SDP exchange to /whip|/whep with the token in the query", async () => {
+  it("posts the session exchange to the view path with the token in the query", async () => {
     const calls: string[] = [];
     const orig = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -78,8 +78,9 @@ describe("SignalingClient engine contract", () => {
     }) as typeof fetch;
     try {
       const sig = new SignalingClient("https://engine.example", "tokPLAY");
-      const r = await sig.exchangeSdp("whep", "s_abc", "v=0");
+      const r = await sig.exchangeSession("view", "s_abc", "v=0");
       expect(calls[0]).toBe("https://engine.example/whep/s_abc?token=tokPLAY");
+      expect(r.answer).toBe("v=0");
       expect(r.resourceUrl).toBe("https://engine.example/whep/s_abc/session1");
     } finally {
       globalThis.fetch = orig;

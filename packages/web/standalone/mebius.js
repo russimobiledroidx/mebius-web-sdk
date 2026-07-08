@@ -33209,13 +33209,13 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       await waitForIceGathering(pc);
       const localSdp = (_a = pc.localDescription) == null ? void 0 : _a.sdp;
       if (!localSdp) throw mebiusError("CONNECTION_FAILED", "Failed to create a local session.");
-      const { answerSdp, resourceUrl } = await this.signaling.exchangeSdp(
-        "whip",
+      const { answer, resourceUrl } = await this.signaling.exchangeSession(
+        "publish",
         streamId,
         localSdp
       );
       this.resourceUrl = resourceUrl;
-      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      await pc.setRemoteDescription({ type: "answer", sdp: answer });
     }
     async replaceVideoTrack(track) {
       var _a;
@@ -33299,13 +33299,13 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       await waitForIceGathering(pc);
       const localSdp = (_a = pc.localDescription) == null ? void 0 : _a.sdp;
       if (!localSdp) throw mebiusError("CONNECTION_FAILED", "Failed to create a local session.");
-      const { answerSdp, resourceUrl } = await this.signaling.exchangeSdp(
-        "whep",
+      const { answer, resourceUrl } = await this.signaling.exchangeSession(
+        "view",
         streamId,
         localSdp
       );
       this.resourceUrl = resourceUrl;
-      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      await pc.setRemoteDescription({ type: "answer", sdp: answer });
     }
     async stop() {
       var _a;
@@ -33676,21 +33676,27 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     balancedStreamUrl(streamId) {
       return this.withToken(`${this.base()}/flv/${encodeURIComponent(streamId)}.flv`);
     }
-    // Performs the SDP offer/answer exchange for a publish (WHIP) or low-latency
-    // view (WHEP) session. Protocol detail kept in line comments so it never
-    // leaks into the bundled public .d.ts.
+    // Maps a neutral session kind to the concrete signaling path segment. This
+    // mapping (publish -> WHIP, view -> WHEP) lives ONLY in this method body, so
+    // the protocol names never appear in any exported type signature.
+    pathFor(kind) {
+      return kind === "publish" ? "whip" : "whep";
+    }
+    // Performs the offer/answer exchange for a publish or a low-latency view
+    // session. Protocol detail kept inside the method body so it never leaks into
+    // the bundled public .d.ts.
     /**
      * Run the session offer/answer exchange. Throws a {@link MebiusError} with a
      * Mebius-flavored code on failure — never the raw protocol name.
      */
-    async exchangeSdp(kind, streamId, offerSdp) {
-      const url = this.withToken(`${this.base()}/${kind}/${encodeURIComponent(streamId)}`);
+    async exchangeSession(kind, streamId, offer) {
+      const url = this.withToken(`${this.base()}/${this.pathFor(kind)}/${encodeURIComponent(streamId)}`);
       let res;
       try {
         res = await fetch(url, {
           method: "POST",
           headers: this.headers("application/sdp"),
-          body: offerSdp
+          body: offer
         });
       } catch (cause) {
         throw mebiusError("CONNECTION_FAILED", void 0, cause);
@@ -33704,10 +33710,10 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       if (!res.ok) {
         throw mebiusError("CONNECTION_FAILED", `Mebius gateway returned ${res.status}.`);
       }
-      const answerSdp = await res.text();
+      const answer = await res.text();
       const location2 = res.headers.get("Location");
       const resourceUrl = location2 ? new URL(location2, url).toString() : null;
-      return { answerSdp, resourceUrl };
+      return { answer, resourceUrl };
     }
     /** Tear down a previously-created session resource. Best-effort. */
     async deleteResource(resourceUrl) {
