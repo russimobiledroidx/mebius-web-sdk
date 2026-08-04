@@ -41,14 +41,16 @@ export interface BroadcasterOptions {
  * Playback mode.
  * - `"low-latency"` — minimal (sub-second) delay, best for interactive/real-time
  *   viewing. Web browsers only.
- * - `"balanced"` — low delay (~1-3s) with broad scalability, best for typical
- *   one-to-many web viewers. Web browsers only (not supported on iOS Safari).
  * - `"scale"` — optimized for the largest audiences; higher delay. Plays on
  *   every platform, including iOS Safari.
  *
  * Mebius picks the right delivery method for each mode automatically.
  */
-export type PlaybackMode = "low-latency" | "balanced" | "scale";
+// Maintainer note (not shipped as guidance to clients): a third mid-latency mode
+// was declared here previously but the gateway served no route for it, so every
+// player using it 404'd on its first request. Removed rather than left as a
+// broken promise in the public type; it can return once the gateway serves it.
+export type PlaybackMode = "low-latency" | "scale";
 
 /** Options for {@link MebiusClient.createPlayer}. */
 export interface PlayerOptions {

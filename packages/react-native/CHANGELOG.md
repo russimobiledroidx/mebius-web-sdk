@@ -1,5 +1,30 @@
 # @mebius-io/react-native
 
+## 0.2.0
+
+### Minor Changes
+
+- Remove the mid-latency playback mode and the vendor-named peer dependency.
+
+  **Breaking:** `PlaybackMode` no longer accepts `"balanced"`. Published versions
+  0.1.0–0.1.3 declared and documented that mode, but the gateway serves no route for
+  it — the transport requested a path that is neither mounted nor present in the
+  public allowlist, so every player using `mode: "balanced"` failed on its first
+  request. It is removed rather than left as a broken promise in the public type.
+
+  Migrate: use `"scale"` (plays everywhere, including iOS Safari) or
+  `"low-latency"` (sub-second, browser only).
+
+  **Also removed:** the optional `flv.js` peer dependency. It existed only to serve
+  the mode above, and naming a transport library in `peerDependencies` told
+  integrators which delivery protocol sits underneath — the SDK is supposed to keep
+  that internal. Nothing to do on upgrade; if you installed `flv.js` solely for this
+  SDK you can drop it.
+
+  The abstraction guard now also scans the repository root (the npm landing README)
+  and `package.json` peer dependencies, so neither class of leak can return
+  unnoticed.
+
 ## 0.1.3
 
 ### Patch Changes

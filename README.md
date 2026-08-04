@@ -79,7 +79,7 @@ Dokumentasi lengkap per package: **[`@mebius-io/web`](packages/web/README.md)** 
 
 | Package | Deskripsi |
 |---|---|
-| [`@mebius-io/web`](packages/web) | Core SDK, vanilla TypeScript (browser WebRTC + HLS). |
+| [`@mebius-io/web`](packages/web) | Core SDK, vanilla TypeScript (browser real-time + adaptive streaming playback). |
 | [`@mebius-io/react`](packages/react) | React hooks tipis di atas `@mebius-io/web`. |
 | [`@mebius-io/react-native`](packages/react-native) | Bindings React Native (via `react-native-webrtc`). |
 
