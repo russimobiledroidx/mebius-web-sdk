@@ -1,5 +1,14 @@
 # @mebius-io/react-native
 
+## 0.4.1
+
+### Patch Changes
+
+- Picks up the playback fixes in `@mebius-io/web` 0.4.1 (autoplay policy handled
+  instead of swallowed, so a live stream renders instead of showing a black
+  element). No API change here; the dependency pin is exact, so this release is
+  what carries the fix to consumers of this package.
+
 ## 0.4.0
 
 ### Minor Changes
