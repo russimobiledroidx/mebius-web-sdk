@@ -17,6 +17,19 @@ export interface MebiusInitOptions {
   gateway: string;
 }
 
+/**
+ * One playback route Mebius has prepared for a stream, as returned alongside the
+ * token by your backend. Pass the list through untouched — Mebius orders it and
+ * picks from it. `kind` is a Mebius intent label, not a format: treat both fields
+ * as opaque.
+ */
+export interface MebiusDelivery {
+  /** Mebius intent label, e.g. `"fast"` or `"wide"`. Opaque to your app. */
+  kind: string;
+  /** A Mebius-relative path. Opaque to your app; Mebius resolves it. */
+  path: string;
+}
+
 /** Options for {@link Mebius.connect}. */
 export interface MebiusConnectOptions {
   /**
@@ -24,6 +37,15 @@ export interface MebiusConnectOptions {
    * The app secret must never be embedded in client code.
    */
   token: string;
+  /**
+   * The `deliveries` list your backend received together with the token. Pass it
+   * through as-is and Mebius will pick the best route for each viewer's device,
+   * falling back automatically if one stops delivering frames.
+   *
+   * Optional: without it playback still works, but every viewer is served from
+   * Mebius origin rather than the nearest edge.
+   */
+  deliveries?: MebiusDelivery[];
 }
 
 /** A media capture constraint: enable/disable, or a detailed constraint set. */
@@ -39,22 +61,27 @@ export interface BroadcasterOptions {
 
 /**
  * Playback mode.
+ * - `"auto"` — recommended. Mebius picks per viewer and falls back on its own.
  * - `"low-latency"` — minimal (sub-second) delay, best for interactive/real-time
  *   viewing. Web browsers only.
+ * - `"balanced"` — a low delay that still scales to a large audience. Web
+ *   browsers with Media Source support (i.e. not iOS Safari).
  * - `"scale"` — optimized for the largest audiences; higher delay. Plays on
  *   every platform, including iOS Safari.
  *
  * Mebius picks the right delivery method for each mode automatically.
  */
-// Maintainer note (not shipped as guidance to clients): a third mid-latency mode
-// was declared here previously but the gateway served no route for it, so every
-// player using it 404'd on its first request. Removed rather than left as a
-// broken promise in the public type; it can return once the gateway serves it.
-export type PlaybackMode = "low-latency" | "scale";
+// Maintainer note (not shipped as guidance to clients): "balanced" was deleted in
+// 0.2.0 on the reading that the gateway served no route for it. The route had
+// simply not been built — production web playback was always this path. It is back
+// now that the gateway serves it. "auto" is the mode to prefer going forward: the
+// gateway already knows which routes are live and what each costs to serve.
+export type PlaybackMode = "auto" | "low-latency" | "balanced" | "scale";
 
 /** Options for {@link MebiusClient.createPlayer}. */
 export interface PlayerOptions {
-  mode: PlaybackMode;
+  /** Defaults to `"auto"` — let Mebius choose per viewer. */
+  mode?: PlaybackMode;
 }
 
 /**

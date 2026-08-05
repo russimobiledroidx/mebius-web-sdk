@@ -36,11 +36,16 @@ import { Mebius } from "@mebius-io/web";
 Mebius.init({ appId: "app_123", gateway: "https://gateway.mebius.io" });
 
 // 2. Token short-lived di-mint backend-mu (app secret tak pernah di client).
-const token = await fetch("/api/mebius-token?streamId=my-stream&role=viewer").then((r) => r.text());
-const client = Mebius.connect({ token });
+const { token, deliveries } = await fetch(
+  "/api/mebius-token?streamId=my-stream&role=viewer",
+).then((r) => r.json());
+
+// `deliveries` datang bareng token dari backend. Teruskan apa adanya —
+// Mebius yang menentukan rute mana dipakai untuk tiap penonton.
+const client = Mebius.connect({ token, deliveries });
 
 // 3a. Tonton.
-const player = client.createPlayer({ mode: "low-latency" }); // atau "scale"
+const player = client.createPlayer(); // Mebius pilih rute terbaik per penonton
 await player.play("my-stream", "#viewer");                    // <video id="viewer">
 
 // 3b. …atau broadcast.
@@ -55,7 +60,7 @@ import { useMebius, usePlayer } from "@mebius-io/react";
 
 function Watch({ token, streamId }: { token: string; streamId: string }) {
   const { client } = useMebius({ appId: "app_123", gateway: "https://gateway.mebius.io", token });
-  const { videoRef, play } = usePlayer(client, { mode: "low-latency" });
+  const { videoRef, play } = usePlayer(client, {});
   return <video ref={videoRef} onClick={() => play(streamId)} autoPlay playsInline />;
 }
 ```
@@ -66,6 +71,8 @@ Dokumentasi lengkap per package: **[`@mebius-io/web`](packages/web/README.md)** 
 
 ## Fitur
 
+- **Rute otomatis** — default `"auto"`: Mebius memilih rute per penonton dan
+  pindah sendiri kalau rute yang dipakai berhenti mengirim frame.
 - **API mode-based** — pilih `"low-latency"` (interaktif, sub-detik) atau
   `"scale"` (audiens besar). SDK memilih delivery yang tepat otomatis.
 - **Transport tersembunyi** — kode kliennya bicara istilah Mebius saja; tidak

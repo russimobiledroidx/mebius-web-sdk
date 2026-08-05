@@ -19,6 +19,7 @@ export type {
 export type {
   MebiusInitOptions,
   MebiusConnectOptions,
+  MebiusDelivery,
   BroadcasterOptions,
   PlayerOptions,
   PlaybackMode,

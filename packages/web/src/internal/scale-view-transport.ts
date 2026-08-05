@@ -20,7 +20,16 @@ export class HlsViewTransport implements ViewTransport {
   private endedCb: (() => void) | null = null;
   private bufferingCb: (() => void) | null = null;
 
-  constructor(private readonly signaling: SignalingClient) {}
+  /**
+   * deliveryPath, when given, is a gateway-relative path from the gateway's own
+   * delivery list — that is how a CDN-backed playlist gets used instead of the
+   * origin one. Without it this falls back to the origin playlist, which is
+   * still correct, just served from our own bandwidth.
+   */
+  constructor(
+    private readonly signaling: SignalingClient,
+    private readonly deliveryPath?: string,
+  ) {}
 
   onEnded(cb: () => void): void {
     this.endedCb = cb;
@@ -32,7 +41,9 @@ export class HlsViewTransport implements ViewTransport {
 
   async start(streamId: string, video: HTMLVideoElement): Promise<void> {
     this.video = video;
-    const url = this.signaling.scalePlaylistUrl(streamId);
+    const url = this.deliveryPath
+      ? this.signaling.deliveryUrl(this.deliveryPath)
+      : this.signaling.scalePlaylistUrl(streamId);
 
     video.addEventListener("ended", () => this.endedCb?.());
     video.addEventListener("waiting", () => this.bufferingCb?.());

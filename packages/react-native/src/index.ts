@@ -55,7 +55,7 @@ export const Mebius = {
   },
   async connect(options: MebiusConnectOptions): Promise<MebiusClient> {
     if (!config) throw new MebiusError("UNKNOWN", "Call Mebius.init() before connect().");
-    const handle = await bridgeOrThrow().connect(options.token);
+    const handle = await bridgeOrThrow().connect(options.token, options.deliveries ?? []);
     return new MebiusClient(handle);
   },
 };
@@ -68,8 +68,17 @@ export class MebiusClient {
     const h = await bridgeOrThrow().createBroadcaster(this.handle, options);
     return new MebiusBroadcaster(h);
   }
-  async createPlayer(options: PlayerOptions): Promise<MebiusPlayer> {
-    const h = await bridgeOrThrow().createPlayer(this.handle, options.mode);
+  async createPlayer(options: PlayerOptions = {}): Promise<MebiusPlayer> {
+    const h = await bridgeOrThrow().createPlayer(this.handle, options.mode ?? "auto");
+    return new MebiusPlayer(h);
+  }
+  /**
+   * A player for a stream you are interacting WITH (the other side of a
+   * co-broadcast), where a second of delay makes the interaction feel broken.
+   * Same API as a player; the delay budget is spent differently.
+   */
+  async createMonitor(): Promise<MebiusPlayer> {
+    const h = await bridgeOrThrow().createPlayer(this.handle, "low-latency");
     return new MebiusPlayer(h);
   }
   disconnect(): void {

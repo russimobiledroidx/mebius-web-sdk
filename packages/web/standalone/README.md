@@ -9,7 +9,7 @@ the file has **zero external dependencies**. `Mebius` becomes a global.
 
 | File | Use |
 |---|---|
-| `mebius.min.js` | production (minified, ~520 KB) |
+| `mebius.min.js` | production (minified, ~675 KB) |
 | `mebius.js` | dev (readable) |
 
 The repo is private, so grab the file once (you have repo access), then commit

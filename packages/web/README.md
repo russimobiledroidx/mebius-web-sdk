@@ -50,12 +50,17 @@ external deps. `Mebius` becomes a global.
 <script src="mebius.min.js"></script>
 <script>
   Mebius.init({ appId: "app_123", gateway: "https://gateway.mebius.io" });
-  const client = Mebius.connect({ token }); // token from your backend
+  const client = Mebius.connect({ token, deliveries }); // dari backend kamu
 </script>
 ```
 
 File + full PHP example: [`standalone/`](./standalone/). Raw download:
-`https://raw.githubusercontent.com/russimobiledroidx/mebius-web-sdk/v0.1.0/packages/web/standalone/mebius.min.js`
+`https://raw.githubusercontent.com/russimobiledroidx/mebius-web-sdk/v0.3.0/packages/web/standalone/mebius.min.js`
+
+The drop-in file is not part of the npm package — `files` ships only `dist` — so it
+is fetched from the tag, and the tag must match the version you installed. For a
+page with a build step, or one that can use an import map, prefer the ESM path:
+`https://esm.sh/@mebius-io/web@0.3.0`.
 
 ## Quick Start
 
@@ -106,7 +111,7 @@ await broadcaster.stop();
 ### d. Watch
 
 ```ts
-const player = client.createPlayer({ mode: "low-latency" }); // atau "scale"
+const player = client.createPlayer(); // mode default "auto"
 
 player.on("playing", ({ streamId }) => console.log("playing", streamId));
 player.on("buffering", () => console.log("buffering..."));
@@ -118,8 +123,44 @@ player.setVolume(0.8);
 await player.stop();
 ```
 
-Ganti mode kapan saja dengan membuat player baru: `mode: "low-latency"` untuk
-delay minimum, `mode: "scale"` untuk audiens besar.
+### Mode playback
+
+| Mode | Kapan dipakai |
+| --- | --- |
+| `"auto"` (default) | Rekomendasi. Mebius pilih rute per penonton, dan pindah sendiri kalau rute yang dipakai berhenti mengirim frame. |
+| `"low-latency"` | Interaktif dua arah (mis. co-broadcast), delay sub-detik. Browser saja. |
+| `"balanced"` | Delay rendah tapi tetap skala besar. Butuh browser dengan Media Source (bukan Safari iOS). |
+| `"scale"` | Audiens paling besar, delay paling tinggi, jalan di semua platform termasuk Safari iOS. |
+
+Ganti mode kapan saja dengan membuat player baru.
+
+### Menonton lawan bicara (`createMonitor`)
+
+Kalau kamu menonton stream yang sedang kamu **ajak interaksi** (sisi lain dari
+co-broadcast), delay satu-dua detik membuat interaksinya terasa rusak:
+
+```ts
+const monitor = client.createMonitor();
+await monitor.play(opponentStreamId, "#opponent");
+```
+
+Sama seperti player biasa, hanya budget delay-nya beda. Monitor mulai dari rute
+real-time dan **pindah sendiri** kalau rute itu tidak mengirim frame dalam 8
+detik — logika yang sebelumnya harus ditulis ulang di setiap aplikasi, dan kalau
+salah hasilnya frame hitam di depan penonton live.
+
+### `deliveries`
+
+`Mebius.connect()` menerima `deliveries` yang dikirim backend bareng token:
+
+```ts
+const { token, deliveries } = await (await fetch("/api/mebius-token")).json();
+const client = Mebius.connect({ token, deliveries });
+```
+
+Teruskan apa adanya — isinya opaque dan Mebius yang mengurutkan serta memilih.
+Opsional: tanpa itu playback tetap jalan, tapi setiap penonton dilayani dari
+origin Mebius, bukan edge terdekat.
 
 ## Integrasi per framework
 
@@ -152,7 +193,7 @@ import { useMebius, usePlayer } from "@mebius-io/react";
 
 function Watch({ token, streamId }) {
   const { client } = useMebius({ appId, gateway, token });
-  const { videoRef, play } = usePlayer(client, { mode: "low-latency" });
+  const { videoRef, play } = usePlayer(client, {});
   return <video ref={videoRef} onClick={() => play(streamId)} autoPlay />;
 }
 ```
@@ -181,7 +222,7 @@ export function useWatch(streamId: string) {
   onMounted(async () => {
     Mebius.init({ appId, gateway });
     const client = Mebius.connect({ token: await getToken() });
-    player = client.createPlayer({ mode: "low-latency" });
+    player = client.createPlayer();
     await player.play(streamId, video.value!);
   });
   onUnmounted(() => player?.stop());
@@ -191,18 +232,19 @@ export function useWatch(streamId: string) {
 
 ### Vite
 
-Tidak ada config khusus. ESM langsung jalan; engine playback untuk mode
-`"scale"` di-load lazy hanya saat mode itu dipakai, jadi tidak menambah bundle
-low-latency.
+Tidak ada config khusus. ESM langsung jalan; engine playback per mode di-load
+lazy hanya saat mode itu dipakai, jadi aplikasi yang cuma pakai `"low-latency"`
+tidak membawa bundle mode lain.
 
 ## API Reference
 
 | Class | Method | Return | Keterangan |
 |---|---|---|---|
 | `Mebius` | `init({ appId, gateway })` | `void` | Konfigurasi sekali di awal. |
-| `Mebius` | `connect({ token })` | `MebiusClient` | Buka koneksi. |
+| `Mebius` | `connect({ token, deliveries? })` | `MebiusClient` | Buka koneksi. |
 | `MebiusClient` | `createBroadcaster({ video?, audio? })` | `MebiusBroadcaster` | |
-| `MebiusClient` | `createPlayer({ mode })` | `MebiusPlayer` | `mode: "low-latency" \| "scale"` |
+| `MebiusClient` | `createPlayer({ mode? })` | `MebiusPlayer` | `mode: "auto" \| "low-latency" \| "balanced" \| "scale"`, default `"auto"` |
+| `MebiusClient` | `createMonitor()` | `MebiusPlayer` | Player untuk stream yang kamu ajak interaksi. |
 | `MebiusClient` | `disconnect(reason?)` | `void` | |
 | `MebiusBroadcaster` | `start(streamId)` | `Promise<void>` | |
 | `MebiusBroadcaster` | `stop()` | `Promise<void>` | |

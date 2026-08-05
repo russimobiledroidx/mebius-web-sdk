@@ -61,6 +61,21 @@ export class SignalingClient {
   // Build the playlist URL used by scale-mode playback (HLS path, hidden). The
   // engine serves the playlist under /live/{id}/index.m3u8 and requires the
   // token in the query; segment URIs in the playlist inherit it automatically.
+  /**
+   * Absolute, tokenized URL for a gateway-relative delivery path handed to us
+   * by the gateway (`deliveries[].path`). The gateway decides which paths exist
+   * and in what order; the SDK only resolves them against its own base and
+   * attaches the access token. Anything that is not a plain gateway-relative
+   * path is rejected rather than fetched: an absolute URL there would send the
+   * token to a host we did not choose.
+   */
+  deliveryUrl(path: string): string {
+    if (!path.startsWith("/") || path.startsWith("//") || path.includes("://")) {
+      throw mebiusError("CONNECTION_FAILED", "The gateway returned an unusable delivery path.");
+    }
+    return this.withToken(`${this.base()}${path}`);
+  }
+
   /** Playlist URL for scale-mode playback. */
   scalePlaylistUrl(streamId: string): string {
     return this.withToken(`${this.base()}/live/${encodeURIComponent(streamId)}/index.m3u8`);
