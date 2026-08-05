@@ -23,6 +23,20 @@ export interface MebiusConnectOptions {
    * no per-viewer cost at all.
    */
   deliveries?: MebiusDelivery[];
+  /**
+   * Quality/session reporting credential + endpoint, from the same token response
+   * (`beaconToken` / `beaconUrl`). Pass them and Mebius counts this session's
+   * viewer minutes; on this platform no quality metrics are reported yet (there is
+   * no stats surface to read them from), so the dashboard's quality columns stay
+   * empty rather than showing invented numbers.
+   *
+   * Safe in a client: the credential is bound by signed claims to one stream and
+   * one project.
+   */
+  beaconToken?: string;
+  beaconUrl?: string;
+  /** Your own id for the person on this connection, if you want it in reports. */
+  userId?: string;
 }
 export interface BroadcasterOptions {
   video?: boolean;

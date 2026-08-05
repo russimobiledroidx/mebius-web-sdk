@@ -1,6 +1,6 @@
 {
   "name": "@mebius-io/react",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "React hooks for the Mebius Web SDK — a thin layer over @mebius-io/web.",
   "license": "MIT",
   "type": "module",

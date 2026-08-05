@@ -25,7 +25,7 @@ npm i @mebius-io/react
 
 | Hook | Return |
 |---|---|
-| `useMebius({ appId, gateway, token })` | `{ client, status, error }` |
+| `useMebius({ appId, gateway, token, deliveries?, beaconToken?, beaconUrl?, userId? })` | `{ client, status, error }` |
 | `useBroadcaster(client, options?)` | `{ broadcaster, previewRef, start, stop, switchCamera, setMicEnabled, setCameraEnabled, isLive }` |
 | `usePlayer(client, { mode })` | `{ player, videoRef, play, stop, setVolume, isPlaying }` |
 
@@ -70,6 +70,28 @@ function Watch({ token, streamId }: { token: string; streamId: string }) {
 
 > Next.js: render komponen ini sebagai client component (`"use client"`) dan
 > import dinamis dengan `{ ssr: false }` karena SDK butuh WebRTC browser.
+
+## `deliveries` / `beaconToken` / `beaconUrl`
+
+Ketiganya datang dari response token yang sama, dan diteruskan apa adanya ke
+`@mebius-io/web`:
+
+```tsx
+const { token, deliveries, beaconToken, beaconUrl } = await (await fetch("/api/mebius-token")).json();
+const { client } = useMebius({ appId, gateway, token, deliveries, beaconToken, beaconUrl });
+```
+
+- `deliveries` — rute playback pilihan gateway. Tanpa itu playback tetap jalan,
+  tapi setiap penonton dilayani dari origin Mebius, bukan edge terdekat.
+  **Memoize array-nya**: identitas array baru tiap render me-reconnect client,
+  sama seperti `token` yang berubah.
+- `beaconToken` + `beaconUrl` — mengisi **Quality → Publish / Play** di dashboard
+  Mebius dan jadi dasar hitung **viewer minutes**. Tanpa keduanya stream jalan
+  normal, kamu cuma tak melihat data kualitasnya. Aman di client: kredensialnya
+  terikat klaim bertanda tangan ke satu stream dan satu project. Tambah `userId`
+  kalau ingin laporan membawa id penggunamu.
+
+Mengubah `beaconToken` atau `beaconUrl` me-reconnect client, sama seperti `token`.
 
 ## License
 
