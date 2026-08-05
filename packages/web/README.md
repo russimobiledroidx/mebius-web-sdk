@@ -162,6 +162,29 @@ Teruskan apa adanya — isinya opaque dan Mebius yang mengurutkan serta memilih.
 Opsional: tanpa itu playback tetap jalan, tapi setiap penonton dilayani dari
 origin Mebius, bukan edge terdekat.
 
+### `beaconToken` / `beaconUrl` — quality di dashboard
+
+Response token juga membawa dua field opsional. Teruskan keduanya dan SDK
+melaporkan kualitas stream ini (bitrate, fps, rtt, jeda first-frame) tiap ~15
+detik:
+
+```ts
+const { token, deliveries, beaconToken, beaconUrl } = await (await fetch("/api/mebius-token")).json();
+const client = Mebius.connect({ token, deliveries, beaconToken, beaconUrl });
+```
+
+Itu yang mengisi **Quality → Publish / Play** di dashboard Mebius, dan yang jadi
+dasar hitung **viewer minutes** — laporan sisi penonton adalah satu-satunya sumber
+data itu, karena cuma client yang bisa melihat pengalaman penonton sebenarnya.
+
+Aman di browser: kredensialnya terikat klaim bertanda tangan ke **satu** stream dan
+**satu** project, jadi tak bisa dipakai menulis telemetri milik stream lain. SDK
+tidak pernah tahu tenant-mu — informasi itu ada di dalam klaim, bukan di kode client.
+
+Tanpa dua field itu stream tetap jalan normal; kamu hanya tidak melihat data
+kualitasnya. Tambahkan `userId` di `connect()` kalau ingin laporan itu ikut membawa
+id pengguna versimu.
+
 ## Integrasi per framework
 
 ### Vanilla JS

@@ -29,7 +29,11 @@ export const Mebius = {
       throw mebiusError("UNKNOWN", "Call Mebius.init() before Mebius.connect().");
     }
     if (!options.token) throw mebiusError("UNKNOWN", "Mebius.connect requires a token.");
-    const client = new MebiusClient(config, options.token, options.deliveries ?? []);
+    const telemetry =
+      options.beaconToken && options.beaconUrl
+        ? { token: options.beaconToken, url: options.beaconUrl }
+        : null;
+    const client = new MebiusClient(config, options.token, options.deliveries ?? [], telemetry, options.userId);
     client.open();
     return client;
   },

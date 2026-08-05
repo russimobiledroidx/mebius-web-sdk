@@ -3,6 +3,7 @@ import { mebiusError } from "./errors.js";
 import { TypedEmitter, type ClientEventMap } from "./events.js";
 import { MebiusPlayer } from "./player.js";
 import { SignalingClient } from "./internal/signaling.js";
+import type { TelemetryTarget } from "./internal/telemetry.js";
 import { readToken } from "./internal/token.js";
 import type {
   BroadcasterOptions,
@@ -25,6 +26,8 @@ export class MebiusClient extends TypedEmitter<ClientEventMap> {
     config: MebiusInitOptions,
     private readonly token: string,
     private readonly deliveries: readonly MebiusDelivery[] = [],
+    private readonly telemetry: TelemetryTarget | null = null,
+    private readonly userId?: string,
   ) {
     super();
     this.signaling = new SignalingClient(config.gateway, token);
@@ -52,13 +55,13 @@ export class MebiusClient extends TypedEmitter<ClientEventMap> {
   /** Create a broadcaster bound to this connection. */
   createBroadcaster(options: BroadcasterOptions = {}): MebiusBroadcaster {
     this.assertConnected();
-    return new MebiusBroadcaster(this.signaling, options);
+    return new MebiusBroadcaster(this.signaling, options, this.telemetry, this.userId);
   }
 
   /** Create a player bound to this connection. */
   createPlayer(options: PlayerOptions = {}): MebiusPlayer {
     this.assertConnected();
-    return new MebiusPlayer(this.signaling, options, this.deliveries);
+    return new MebiusPlayer(this.signaling, options, this.deliveries, this.telemetry, this.userId);
   }
 
   /**
@@ -74,7 +77,7 @@ export class MebiusClient extends TypedEmitter<ClientEventMap> {
    */
   createMonitor(): MebiusPlayer {
     this.assertConnected();
-    return new MebiusPlayer(this.signaling, { mode: "low-latency" }, this.deliveries);
+    return new MebiusPlayer(this.signaling, { mode: "low-latency" }, this.deliveries, this.telemetry, this.userId);
   }
 
   /** Close the connection and release resources. */

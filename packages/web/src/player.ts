@@ -3,6 +3,7 @@ import { mebiusError } from "./errors.js";
 import { resolveVideoElement } from "./internal/view-target.js";
 import type { SignalingClient } from "./internal/signaling.js";
 import { createViewCandidates, type ViewTransport } from "./internal/transport.js";
+import { QoeReporter, type TelemetryTarget } from "./internal/telemetry.js";
 import type { MebiusDelivery, PlayerOptions, ViewTarget } from "./types.js";
 
 const STATS_INTERVAL_MS = 2000;
@@ -32,12 +33,15 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
   private video: HTMLVideoElement | null = null;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
   private playing = false;
+  private reporter: QoeReporter | null = null;
 
   /** @internal */
   constructor(
     signaling: SignalingClient,
     options: PlayerOptions = {},
     deliveries: readonly MebiusDelivery[] = [],
+    private readonly telemetry: TelemetryTarget | null = null,
+    private readonly userId?: string,
   ) {
     super();
     this.candidates = createViewCandidates(options.mode ?? "auto", signaling, deliveries);
@@ -49,6 +53,10 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     const video = resolveVideoElement(viewTarget);
     this.video = video;
 
+    // Measured across route attempts, not from the accepted route: a viewer who
+    // waited through a dead edge waited, and reporting only the winning route's
+    // time would hide exactly the delay worth knowing about.
+    const startedAtMs = Date.now();
     let lastError: unknown = null;
     for (const candidate of this.candidates) {
       try {
@@ -59,6 +67,14 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
         if (await hasFirstFrame(video)) {
           this.transport = candidate;
           this.playing = true;
+          if (this.telemetry) {
+            this.reporter = new QoeReporter(this.telemetry, "play", streamId, this.userId);
+            this.reporter.start();
+            // One sample at join time carries the join delay. Viewer minutes are
+            // derived from the span between a session's first and last sample, so
+            // a viewer who leaves before the first stats tick still counts.
+            this.reporter.add({ ts: Math.floor(Date.now() / 1000), firstFrameMs: Date.now() - startedAtMs });
+          }
           this.startStats();
           this.emit("playing", { streamId });
           return;
@@ -80,6 +96,8 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
   /** Stop playback and detach from the video element. */
   async stop(): Promise<void> {
     this.stopStats();
+    await this.reporter?.stop();
+    this.reporter = null;
     await this.transport?.stop();
     this.transport = null;
     this.video = null;
@@ -99,6 +117,10 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
       if (this.transport !== transport) return;
       this.playing = false;
       this.stopStats();
+      // A stream ending is a session ending: flush now or the watch time since the
+      // last batch is never counted.
+      void this.reporter?.stop();
+      this.reporter = null;
       this.emit("ended", undefined);
     });
     transport.onBuffering(() => {
@@ -110,7 +132,13 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
   private startStats(): void {
     this.statsTimer = setInterval(async () => {
       const stats = await this.transport?.getStats();
-      if (stats) this.emit("stats", stats);
+      if (!stats) return;
+      this.emit("stats", stats);
+      this.reporter?.add({
+        ts: Math.floor(Date.now() / 1000),
+        bitrateKbps: stats.bitrateKbps,
+        fps: stats.framesPerSecond,
+      });
     }, STATS_INTERVAL_MS);
   }
 
