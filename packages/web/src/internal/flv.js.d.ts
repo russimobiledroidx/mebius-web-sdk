@@ -22,7 +22,19 @@ declare module "flv.js" {
   }
   interface FlvModule {
     isSupported(): boolean;
-    createPlayer(config: { type: string; url: string; isLive?: boolean }): FlvPlayer;
+    createPlayer(
+      source: { type: string; url: string; isLive?: boolean },
+      config?: {
+        enableStashBuffer?: boolean;
+        stashInitialSize?: number;
+        lazyLoad?: boolean;
+        autoCleanupSourceBuffer?: boolean;
+        autoCleanupMaxBackwardDuration?: number;
+        autoCleanupMinBackwardDuration?: number;
+        reuseRedirectedURL?: boolean;
+        fixAudioTimestampGap?: boolean;
+      },
+    ): FlvPlayer;
     Events: Record<string, string>;
   }
   const flvjs: FlvModule;

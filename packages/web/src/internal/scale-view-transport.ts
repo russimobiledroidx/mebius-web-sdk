@@ -70,7 +70,10 @@ export class HlsViewTransport implements ViewTransport {
     // No forced lowLatencyMode: it is for LL-HLS playlists (EXT-X-PART), and
     // asserting it against an ordinary playlist makes hls.js wait for parts that
     // never arrive. hls.js turns it on by itself when the playlist advertises it.
-    const hls = new Hls();
+    // maxLiveSyncPlaybackRate lets hls.js catch up by playing slightly fast when
+    // it has drifted behind the live edge. Default is 1 — no catching up ever, so
+    // every stall becomes permanent added latency for the rest of the session.
+    const hls = new Hls({ maxLiveSyncPlaybackRate: 1.5 });
     this.hls = hls;
     hls.on(Hls.Events.ERROR, (_evt, data) => {
       if (data.fatal) this.bufferingCb?.();
