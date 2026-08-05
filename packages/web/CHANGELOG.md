@@ -1,5 +1,36 @@
 # @mebius-io/web
 
+## 0.4.1
+
+### Patch Changes
+
+- Play the stream instead of a black rectangle.
+
+  Reported as "the player shows no video although the stream is active, and the
+  SDK never falls back — yet the same playlist plays fine in hls.js directly".
+  Three defects; the first explains the whole report.
+
+  **Autoplay policy, swallowed.** Every view transport called
+  `video.play().catch(() => undefined)`, and nothing set `muted`. Chrome and
+  Safari refuse playback WITH AUDIO without sticky user activation, and a click
+  does not survive `await fetchToken()` + `await import("hls.js")`. So play()
+  rejected, the element stayed on frame zero, and the SDK said nothing. The
+  first-frame watchdog then timed out on every route in turn: the fallback DID
+  run, it just could not succeed, which from outside looks like no fallback at
+  all. Now: try with sound, and on a policy refusal mute and retry (muted
+  playback is always allowed). Failures that are NOT the policy propagate, since
+  a dead route is what the fallback is for.
+
+  **`srcObject` blocked every later route.** A real-time route attaches a
+  MediaStream via srcObject; HLS/FLV use src/MSE, and while srcObject is set the
+  element ignores src. One failed WHEP attempt therefore kept the picture black
+  no matter how healthy the playlist was. The player resets the element before
+  each candidate, and the real-time route releases it on stop.
+
+  **`lowLatencyMode: true` was forced** on ordinary playlists. That flag is for
+  LL-HLS (`EXT-X-PART`); asserting it makes hls.js wait for parts that never
+  arrive. hls.js turns it on itself when the playlist advertises it.
+
 ## 0.4.0
 
 ### Minor Changes
