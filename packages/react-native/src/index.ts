@@ -8,6 +8,7 @@
  * throws a clear `NOT_IMPLEMENTED` MebiusError rather than a silent no-op.
  */
 import { getNativeBridge, type NativeHandle } from "./bridge.js";
+import { SessionReporter, type TelemetryTarget } from "./telemetry.js";
 import type {
   BroadcasterOptions,
   MebiusConnectOptions,
@@ -56,21 +57,29 @@ export const Mebius = {
   async connect(options: MebiusConnectOptions): Promise<MebiusClient> {
     if (!config) throw new MebiusError("UNKNOWN", "Call Mebius.init() before connect().");
     const handle = await bridgeOrThrow().connect(options.token, options.deliveries ?? []);
-    return new MebiusClient(handle);
+    const telemetry =
+      options.beaconToken && options.beaconUrl
+        ? { token: options.beaconToken, url: options.beaconUrl }
+        : null;
+    return new MebiusClient(handle, telemetry, options.userId);
   },
 };
 
 export class MebiusClient {
   /** @internal */
-  constructor(private readonly handle: NativeHandle) {}
+  constructor(
+    private readonly handle: NativeHandle,
+    private readonly telemetry: TelemetryTarget | null = null,
+    private readonly userId?: string,
+  ) {}
 
   async createBroadcaster(options: BroadcasterOptions = {}): Promise<MebiusBroadcaster> {
     const h = await bridgeOrThrow().createBroadcaster(this.handle, options);
-    return new MebiusBroadcaster(h);
+    return new MebiusBroadcaster(h, this.telemetry, this.userId);
   }
   async createPlayer(options: PlayerOptions = {}): Promise<MebiusPlayer> {
     const h = await bridgeOrThrow().createPlayer(this.handle, options.mode ?? "auto");
-    return new MebiusPlayer(h);
+    return new MebiusPlayer(h, this.telemetry, this.userId);
   }
   /**
    * A player for a stream you are interacting WITH (the other side of a
@@ -79,7 +88,7 @@ export class MebiusClient {
    */
   async createMonitor(): Promise<MebiusPlayer> {
     const h = await bridgeOrThrow().createPlayer(this.handle, "low-latency");
-    return new MebiusPlayer(h);
+    return new MebiusPlayer(h, this.telemetry, this.userId);
   }
   disconnect(): void {
     bridgeOrThrow().disconnect(this.handle);
@@ -87,13 +96,26 @@ export class MebiusClient {
 }
 
 export class MebiusBroadcaster {
+  private reporter: SessionReporter | null = null;
+
   /** @internal */
-  constructor(private readonly handle: NativeHandle) {}
-  start(streamId: string): Promise<void> {
-    return bridgeOrThrow().broadcasterStart(this.handle, streamId);
+  constructor(
+    private readonly handle: NativeHandle,
+    private readonly telemetry: TelemetryTarget | null = null,
+    private readonly userId?: string,
+  ) {}
+  async start(streamId: string): Promise<void> {
+    await bridgeOrThrow().broadcasterStart(this.handle, streamId);
+    if (this.telemetry) {
+      this.reporter = new SessionReporter(this.telemetry, "pub", streamId, this.userId);
+      this.reporter.start();
+    }
   }
-  stop(): Promise<void> {
-    return bridgeOrThrow().broadcasterStop(this.handle);
+  async stop(): Promise<void> {
+    // Flush before the transport goes away: the span reported is the airtime.
+    await this.reporter?.stop();
+    this.reporter = null;
+    await bridgeOrThrow().broadcasterStop(this.handle);
   }
   switchCamera(): Promise<void> {
     return bridgeOrThrow().broadcasterSwitchCamera(this.handle);
@@ -107,14 +129,26 @@ export class MebiusBroadcaster {
 }
 
 export class MebiusPlayer {
+  private reporter: SessionReporter | null = null;
+
   /** @internal */
-  constructor(private readonly handle: NativeHandle) {}
+  constructor(
+    private readonly handle: NativeHandle,
+    private readonly telemetry: TelemetryTarget | null = null,
+    private readonly userId?: string,
+  ) {}
   /** `viewTag` is the native tag of the Mebius view component. */
-  play(streamId: string, viewTag: number): Promise<void> {
-    return bridgeOrThrow().playerPlay(this.handle, streamId, viewTag);
+  async play(streamId: string, viewTag: number): Promise<void> {
+    await bridgeOrThrow().playerPlay(this.handle, streamId, viewTag);
+    if (this.telemetry) {
+      this.reporter = new SessionReporter(this.telemetry, "play", streamId, this.userId);
+      this.reporter.start();
+    }
   }
-  stop(): Promise<void> {
-    return bridgeOrThrow().playerStop(this.handle);
+  async stop(): Promise<void> {
+    await this.reporter?.stop();
+    this.reporter = null;
+    await bridgeOrThrow().playerStop(this.handle);
   }
   setVolume(volume: number): void {
     bridgeOrThrow().playerSetVolume(this.handle, Math.min(1, Math.max(0, volume)));

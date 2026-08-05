@@ -1,5 +1,21 @@
 # @mebius-io/react
 
+## 0.4.0
+
+### Minor Changes
+
+- `useMebius({ ..., beaconToken, beaconUrl, userId })` forwards the quality
+  reporting credential to `@mebius-io/web`, so hooks-based apps show up in the
+  Mebius dashboard and have their viewer minutes counted.
+
+  Take all three from the same token response that already gives you `deliveries`.
+  Optional: without them the stream behaves identically, you just see no quality
+  data. Safe in a client — the credential is bound by signed claims to one stream
+  and one project.
+
+  Changing `beaconToken` or `beaconUrl` reconnects the client, the same way a
+  changing `token` does.
+
 ## 0.3.0
 
 ### Minor Changes

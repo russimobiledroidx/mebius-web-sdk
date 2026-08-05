@@ -1,5 +1,34 @@
 # @mebius-io/web
 
+## 0.4.0
+
+### Minor Changes
+
+- Report stream quality, so it reaches your Mebius dashboard.
+
+  Mebius shows per-stream publish/playback quality and derives viewer minutes from
+  play-side reports, and only the client can see either — so both were empty until
+  an SDK sent them.
+
+  **`Mebius.connect()` takes `beaconToken` / `beaconUrl`** (and optionally
+  `userId`), straight from the token response alongside `deliveries`. When present,
+  the SDK samples the transport it already polls for the `stats` event and ships
+  batches every 15s. Optional: without them the stream behaves identically, you
+  just see no quality data.
+
+  No tenant is ever configured or sent — attribution lives in the token's signed
+  claims, which bind it to one stream and one project, so a credential in a browser
+  can only report its own telemetry.
+
+  Two details worth knowing: `pagehide` flushes via `sendBeacon`, because closing
+  the tab IS how a viewing session normally ends and the last interval (and the
+  watch time it represents) would otherwise be lost; and the player's first sample
+  carries first-frame delay measured **across route attempts**, not from the
+  accepted route, since a viewer who sat through a dead edge waited for it.
+
+  Every telemetry failure is swallowed and never retried. It must not break a
+  broadcast, and the next batch is 15s away carrying the same picture of health.
+
 ## 0.3.0
 
 ### Minor Changes

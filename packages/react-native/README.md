@@ -63,6 +63,26 @@ await p.play("my-stream", viewTag);
 Konsep inti (auth/token, mode low-latency vs scale, error code) sama dengan
 `@mebius-io/web` — lihat README-nya.
 
+## `deliveries` / `beaconToken` / `beaconUrl`
+
+Semuanya dari response token yang sama:
+
+```ts
+const { token, deliveries, beaconToken, beaconUrl } = await getToken();
+const client = await Mebius.connect({ token, deliveries, beaconToken, beaconUrl });
+```
+
+- `deliveries` — rute playback pilihan gateway. Di mobile ini beda antara biaya
+  per-penonton dan tanpa biaya per-penonton, jadi kirim kalau ada.
+- `beaconToken` + `beaconUrl` — melaporkan bahwa sesi ini hidup, yang jadi dasar
+  hitung **viewer minutes**. Tanpa keduanya penonton React Native terhitung nol.
+  Tambah `userId` kalau ingin laporan membawa id penggunamu.
+
+**Metrik kualitas belum ada di platform ini.** Package ini tak punya permukaan
+stats — native bridge tak mengekspos `getStats` dan tak ada event `stats` — jadi
+tak ada angka bitrate/fps/rtt yang nyata untuk dikirim. Kolom quality di dashboard
+dibiarkan kosong, bukan diisi angka karangan; watch time tetap terhitung.
+
 ## License
 
 MIT

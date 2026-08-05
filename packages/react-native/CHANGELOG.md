@@ -1,5 +1,29 @@
 # @mebius-io/react-native
 
+## 0.4.0
+
+### Minor Changes
+
+- `Mebius.connect({ ..., beaconToken, beaconUrl, userId })` reports that a session
+  is alive, so React Native viewers stop being counted as zero.
+
+  Mebius derives viewer minutes from client reports: the span between a session's
+  first and last sample IS the watch time. Until now a React Native viewer could
+  watch for an hour and appear nowhere.
+
+  Presence is reported every 15s, immediately on start (a viewer who leaves inside
+  the first interval still watched), and once more on stop so the reported span
+  reaches the moment of leaving.
+
+  **No quality metrics on this platform yet.** This package has no stats surface —
+  the native bridge exposes no `getStats` and nothing emits a `stats` event — so
+  there are no real bitrate/fps/rtt numbers to send, and inventing them would put
+  fiction in a dashboard people bill from. The quality columns stay honestly empty;
+  watch time does not.
+
+  Failures are swallowed and never retried: telemetry must not break a broadcast,
+  and the next heartbeat is 15s away carrying the same information.
+
 ## 0.3.0
 
 ### Minor Changes

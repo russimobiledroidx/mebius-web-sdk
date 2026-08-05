@@ -28,6 +28,19 @@ export interface UseMebiusOptions {
    * render reconnects the client.
    */
   deliveries?: MebiusDelivery[];
+  /**
+   * Quality reporting credential + endpoint, from the same token response
+   * (`beaconToken` / `beaconUrl`). Pass them and this stream's publish/playback
+   * quality shows up in your Mebius dashboard, and viewer minutes are counted.
+   *
+   * Optional: without them the stream behaves identically, you just see no
+   * quality data. Safe in a client — the credential is bound by signed claims to
+   * one stream and one project.
+   */
+  beaconToken?: string;
+  beaconUrl?: string;
+  /** Your own id for the person on this connection, if you want it in reports. */
+  userId?: string;
 }
 
 export interface UseMebiusResult {
@@ -37,7 +50,15 @@ export interface UseMebiusResult {
 }
 
 /** Init + connect, tied to component lifecycle. Reconnects if token changes. */
-export function useMebius({ appId, gateway, token, deliveries }: UseMebiusOptions): UseMebiusResult {
+export function useMebius({
+  appId,
+  gateway,
+  token,
+  deliveries,
+  beaconToken,
+  beaconUrl,
+  userId,
+}: UseMebiusOptions): UseMebiusResult {
   const [client, setClient] = useState<MebiusClient | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<MebiusError | null>(null);
@@ -46,7 +67,7 @@ export function useMebius({ appId, gateway, token, deliveries }: UseMebiusOption
     if (!token) return;
     Mebius.init({ appId, gateway });
     setStatus("connecting");
-    const c = Mebius.connect({ token, deliveries });
+    const c = Mebius.connect({ token, deliveries, beaconToken, beaconUrl, userId });
     const offConnected = c.on("connected", () => setStatus("connected"));
     const offError = c.on("error", (e) => {
       setError(e);
@@ -60,7 +81,10 @@ export function useMebius({ appId, gateway, token, deliveries }: UseMebiusOption
       setClient(null);
       setStatus("idle");
     };
-  }, [appId, gateway, token, deliveries]);
+    // The beacon values belong in the dependency list: they arrive with the token
+    // and change with it, so omitting them would keep reporting under a credential
+    // for the previous stream after a reconnect.
+  }, [appId, gateway, token, deliveries, beaconToken, beaconUrl, userId]);
 
   return { client, status, error };
 }
