@@ -42775,6 +42775,28 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
   };
 
+  // src/internal/autoplay.ts
+  function isAutoplayBlocked(e) {
+    return typeof e === "object" && e !== null && e.name === "NotAllowedError";
+  }
+  async function playWithAutoplayFallback(video) {
+    video.playsInline = true;
+    try {
+      await video.play();
+      return { mutedByPolicy: false };
+    } catch (e) {
+      if (!isAutoplayBlocked(e) || video.muted) throw e;
+      video.muted = true;
+      await video.play();
+      return { mutedByPolicy: true };
+    }
+  }
+  function resetVideoElement(video) {
+    video.srcObject = null;
+    video.removeAttribute("src");
+    video.load();
+  }
+
   // src/internal/ll-view-transport.ts
   var WhepViewTransport = class {
     constructor(signaling) {
@@ -42783,6 +42805,10 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.resourceUrl = null;
       this.endedCb = null;
       this.bufferingCb = null;
+      /** Element this route attached a MediaStream to, so stop() can release it. */
+      this.video = null;
+      /** True when playback only started because the element had to be muted. */
+      this.mutedByPolicy = false;
     }
     onEnded(cb) {
       this.endedCb = cb;
@@ -42792,6 +42818,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
     async start(streamId, video) {
       var _a;
+      this.video = video;
       const pc = new RTCPeerConnection(DEFAULT_RTC_CONFIG);
       this.pc = pc;
       const remote = new MediaStream();
@@ -42800,7 +42827,9 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       pc.ontrack = (ev) => {
         remote.addTrack(ev.track);
         video.srcObject = remote;
-        void video.play().catch(() => {
+        void playWithAutoplayFallback(video).then((o) => {
+          this.mutedByPolicy = o.mutedByPolicy;
+        }).catch(() => {
         });
       };
       pc.onconnectionstatechange = () => {
@@ -42829,6 +42858,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.resourceUrl = null;
       (_a = this.pc) == null ? void 0 : _a.close();
       this.pc = null;
+      if (this.video) resetVideoElement(this.video);
+      this.video = null;
     }
     async getStats() {
       if (!this.pc) return null;
@@ -42866,6 +42897,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.video = null;
       this.endedCb = null;
       this.bufferingCb = null;
+      /** True when playback only started because the element had to be muted. */
+      this.mutedByPolicy = false;
     }
     onEnded(cb) {
       this.endedCb = cb;
@@ -42886,7 +42919,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       });
       if (video.canPlayType("application/vnd.apple.mpegurl")) {
         video.src = url;
-        await video.play().catch(() => void 0);
+        this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
         return;
       }
       let mod;
@@ -42899,7 +42932,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       if (!Hls2.isSupported()) {
         throw mebiusError("CONNECTION_FAILED", "Scale playback is not supported in this browser.");
       }
-      const hls = new Hls2({ lowLatencyMode: true });
+      const hls = new Hls2();
       this.hls = hls;
       hls.on(Hls2.Events.ERROR, (_evt, data) => {
         var _a;
@@ -42907,7 +42940,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       });
       hls.loadSource(url);
       hls.attachMedia(video);
-      await video.play().catch(() => void 0);
+      this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
     }
     async stop() {
       var _a;
@@ -42939,6 +42972,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.video = null;
       this.endedCb = null;
       this.bufferingCb = null;
+      /** True when playback only started because the element had to be muted. */
+      this.mutedByPolicy = false;
     }
     onEnded(cb) {
       this.endedCb = cb;
@@ -42976,7 +43011,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       });
       player.attachMediaElement(video);
       player.load();
-      await Promise.resolve(player.play()).catch(() => void 0);
+      this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
     }
     async stop() {
       if (this.player) {
@@ -43033,7 +43068,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
 
   // src/internal/telemetry.ts
-  var SDK_VERSION = "web/0.4.0";
+  var SDK_VERSION = "web/0.4.1";
   var FLUSH_INTERVAL_MS = 15e3;
   var MAX_BATCH = 64;
   function describeDevice() {
@@ -43255,6 +43290,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       let lastError = null;
       for (const candidate of this.candidates) {
         try {
+          resetVideoElement(video);
           this.attach(candidate);
           await candidate.start(streamId, video);
           if (await hasFirstFrame(video)) {

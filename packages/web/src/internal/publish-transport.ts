@@ -10,6 +10,40 @@ import type { SignalingClient } from "./signaling.js";
 import type { PublishTransport } from "./transport.js";
 import { DEFAULT_RTC_CONFIG, waitForIceGathering } from "./webrtc-util.js";
 
+/**
+ * Offer H264 ahead of everything else for the outgoing video track.
+ *
+ * Chrome negotiates VP8 by default, and VP8 is a dead end for every viewer who
+ * is not on WebRTC: the server's HLS/FLV muxers cannot carry it, so they drop
+ * the video track and publish an audio-only stream ("skipping track (VP8)").
+ * The broadcast looks perfect to the publisher and has no picture for anyone
+ * watching over HLS, FLV, or the CDN.
+ *
+ * H264 is what every one of those paths speaks, and negotiating it here means
+ * the server never has to transcode — which would cost far more latency than
+ * anything else in this SDK.
+ *
+ * Best-effort by design: `setCodecPreferences` is unavailable on older Safari,
+ * and a browser without an H264 encoder has nothing to reorder. Both cases fall
+ * through to the default negotiation rather than failing the broadcast.
+ */
+function preferH264(pc: RTCPeerConnection): void {
+  const caps = RTCRtpSender.getCapabilities?.("video");
+  if (!caps?.codecs) return;
+  const h264 = caps.codecs.filter((c) => c.mimeType.toLowerCase() === "video/h264");
+  if (h264.length === 0) return;
+  const rest = caps.codecs.filter((c) => c.mimeType.toLowerCase() !== "video/h264");
+  for (const tr of pc.getTransceivers()) {
+    if (tr.sender.track?.kind !== "video") continue;
+    try {
+      tr.setCodecPreferences?.([...h264, ...rest]);
+    } catch {
+      // A browser that rejects the list negotiates its own way; still better
+      // than no video for CDN viewers on the browsers that accept it.
+    }
+  }
+}
+
 export class WhipPublishTransport implements PublishTransport {
   private pc: RTCPeerConnection | null = null;
   private resourceUrl: string | null = null;
@@ -23,6 +57,7 @@ export class WhipPublishTransport implements PublishTransport {
     for (const track of stream.getTracks()) {
       pc.addTrack(track, stream);
     }
+    preferH264(pc);
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);

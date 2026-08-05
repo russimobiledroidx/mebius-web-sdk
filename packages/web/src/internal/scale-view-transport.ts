@@ -9,6 +9,7 @@ import type { PlaybackStats } from "../types.js";
 import { mebiusError } from "../errors.js";
 import type { SignalingClient } from "./signaling.js";
 import type { ViewTransport } from "./transport.js";
+import { playWithAutoplayFallback } from "./autoplay.js";
 
 // Loaded on demand so it never weighs down low-latency-only apps.
 type HlsModule = typeof import("hls.js");
@@ -51,7 +52,7 @@ export class HlsViewTransport implements ViewTransport {
     // Safari and iOS play HLS natively — no library needed.
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = url;
-      await video.play().catch(() => undefined);
+      this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
       return;
     }
 
@@ -66,15 +67,24 @@ export class HlsViewTransport implements ViewTransport {
       throw mebiusError("CONNECTION_FAILED", "Scale playback is not supported in this browser.");
     }
 
-    const hls = new Hls({ lowLatencyMode: true });
+    // No forced lowLatencyMode: it is for LL-HLS playlists (EXT-X-PART), and
+    // asserting it against an ordinary playlist makes hls.js wait for parts that
+    // never arrive. hls.js turns it on by itself when the playlist advertises it.
+    // maxLiveSyncPlaybackRate lets hls.js catch up by playing slightly fast when
+    // it has drifted behind the live edge. Default is 1 — no catching up ever, so
+    // every stall becomes permanent added latency for the rest of the session.
+    const hls = new Hls({ maxLiveSyncPlaybackRate: 1.5 });
     this.hls = hls;
     hls.on(Hls.Events.ERROR, (_evt, data) => {
       if (data.fatal) this.bufferingCb?.();
     });
     hls.loadSource(url);
     hls.attachMedia(video);
-    await video.play().catch(() => undefined);
+    this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
   }
+
+  /** True when playback only started because the element had to be muted. */
+  mutedByPolicy = false;
 
   async stop(): Promise<void> {
     this.hls?.destroy();
