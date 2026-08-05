@@ -1,6 +1,6 @@
 {
   "name": "@mebius-io/react-native",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Mebius Client SDK for React Native — broadcast and watch, backed by react-native-webrtc.",
   "license": "MIT",
   "type": "module",

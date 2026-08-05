@@ -1,6 +1,6 @@
 {
   "name": "@mebius-io/web",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Mebius Client SDK for the web — live streaming, simple API.",
   "license": "MIT",
   "type": "module",
@@ -35,6 +35,7 @@
     "lint": "eslint src"
   },
   "dependencies": {
+    "flv.js": "^1.6.2",
     "hls.js": "^1.5.18"
   },
   "publishConfig": {

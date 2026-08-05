@@ -1,5 +1,34 @@
 # @mebius-io/react-native
 
+## 0.3.0
+
+### Minor Changes
+
+- Fix playlist playback, which could not have worked, and accept the gateway's
+  delivery list.
+
+  **Bug fixed:** `mode: "scale"` built a URL under a path prefix the gateway has
+  never routed or allowlisted, and attached no access token — so it could only ever
+  return 404 or 401. Playlist playback now uses the gateway's own `deliveries` list,
+  falls back to the origin playlist the gateway does route, and always carries the
+  token the playback gate requires.
+
+  **`Mebius.connect()` accepts `deliveries`.** Pass through what your backend
+  returned with the token. On mobile this is not a nicety: without it every viewer
+  is served from Mebius origin, which is billed per viewer, instead of from an edge,
+  which is not.
+
+  **New default mode `"auto"`**, so `createPlayer()` no longer requires `mode`, and
+  **new `client.createMonitor()`** for watching the other side of a co-broadcast.
+
+  `"balanced"` is deliberately NOT offered here: it needs Media Source Extensions,
+  which React Native has no equivalent of, so declaring it would repeat exactly the
+  mistake 0.2.0 was fixing — a mode that can never play.
+
+  **Bridge contract change** (relevant only if you implement `MebiusNativeBridge`
+  yourself): `connect(token, deliveries?)` takes a second argument. Existing
+  implementations keep working; they will just ignore the list and stay on origin.
+
 ## 0.2.0
 
 ### Minor Changes

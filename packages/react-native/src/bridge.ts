@@ -9,6 +9,7 @@
  */
 import type {
   BroadcasterOptions,
+  MebiusDelivery,
   MebiusInitOptions,
   PlaybackMode,
 } from "./types.js";
@@ -18,7 +19,11 @@ export type NativeHandle = string;
 
 export interface MebiusNativeBridge {
   init(options: MebiusInitOptions): void;
-  connect(token: string): Promise<NativeHandle>;
+  /**
+   * `deliveries` is the gateway's own ordered list of playback routes for this
+   * token. The native side resolves them; it must not invent paths of its own.
+   */
+  connect(token: string, deliveries?: readonly MebiusDelivery[]): Promise<NativeHandle>;
   disconnect(client: NativeHandle): void;
 
   createBroadcaster(client: NativeHandle, options: BroadcasterOptions): Promise<NativeHandle>;

@@ -1,5 +1,49 @@
 # @mebius-io/web
 
+## 0.3.0
+
+### Minor Changes
+
+- Playback routes now come from the gateway, and a route that delivers no frames
+  no longer means a black screen.
+
+  **`Mebius.connect()` accepts `deliveries`.** Your backend already receives this
+  list alongside the token; pass it through untouched. Mebius orders it and picks
+  from it. Optional — without it playback still works, but every viewer is served
+  from Mebius origin rather than the nearest edge.
+
+  **New default mode `"auto"`.** `createPlayer()` no longer requires `mode`. In
+  `"auto"` the gateway's ordering decides, so route policy changes without an SDK
+  release.
+
+  **First-frame watchdog.** A route can report a healthy connection and still send
+  nothing: an edge with no ingest yet answers 200 with an empty stream, and a
+  real-time connection reports `connected` while zero frames arrive. Every mode now
+  walks an ordered candidate list and moves on if the picture has not advanced
+  within 8s, instead of sitting on a dead route.
+
+  **New `client.createMonitor()`.** A player for a stream you are interacting WITH
+  (the other side of a co-broadcast), where a second of delay makes the interaction
+  feel broken. Apps used to hand-roll this — open a real-time view, run a timer,
+  swap players when it stayed black — and getting the fallback wrong put a black
+  frame in front of a live audience.
+
+  **`"balanced"` is back.** 0.2.0 removed it, on the reading that the gateway
+  served no route for it. That reading was wrong: the route had simply not been
+  built, and mid-latency playback is what production web viewing has always used.
+  The gateway serves it now. The library that plays it is a bundled `dependency`,
+  never a `peerDependency` — an integrator must never have to type a transport
+  library's name to make Mebius work.
+
+  Nothing breaks: `mode` is now optional (previously required), `deliveries` is
+  optional, and every existing mode value still resolves. Callers that pass no
+  `deliveries` keep the origin playlist they use today.
+
+  Note: the single-file drop-in build grows from ~520 KB to ~675 KB minified,
+  because the mid-latency player is inlined into it. The npm packages are
+  unaffected — there each playback engine is still loaded lazily, only when the
+  mode that needs it is used.
+
 ## 0.2.0
 
 ### Minor Changes

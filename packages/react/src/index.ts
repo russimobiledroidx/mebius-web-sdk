@@ -13,6 +13,7 @@ import {
   type MebiusPlayer,
   type PlayerOptions,
   type MebiusError,
+  type MebiusDelivery,
 } from "@mebius-io/web";
 
 export type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
@@ -21,6 +22,12 @@ export interface UseMebiusOptions {
   appId: string;
   gateway: string;
   token: string;
+  /**
+   * The `deliveries` list your backend returned with the token. Pass it through
+   * as-is. Keep the array reference stable (or memoize it) — a new array on every
+   * render reconnects the client.
+   */
+  deliveries?: MebiusDelivery[];
 }
 
 export interface UseMebiusResult {
@@ -30,7 +37,7 @@ export interface UseMebiusResult {
 }
 
 /** Init + connect, tied to component lifecycle. Reconnects if token changes. */
-export function useMebius({ appId, gateway, token }: UseMebiusOptions): UseMebiusResult {
+export function useMebius({ appId, gateway, token, deliveries }: UseMebiusOptions): UseMebiusResult {
   const [client, setClient] = useState<MebiusClient | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<MebiusError | null>(null);
@@ -39,7 +46,7 @@ export function useMebius({ appId, gateway, token }: UseMebiusOptions): UseMebiu
     if (!token) return;
     Mebius.init({ appId, gateway });
     setStatus("connecting");
-    const c = Mebius.connect({ token });
+    const c = Mebius.connect({ token, deliveries });
     const offConnected = c.on("connected", () => setStatus("connected"));
     const offError = c.on("error", (e) => {
       setError(e);
@@ -53,7 +60,7 @@ export function useMebius({ appId, gateway, token }: UseMebiusOptions): UseMebiu
       setClient(null);
       setStatus("idle");
     };
-  }, [appId, gateway, token]);
+  }, [appId, gateway, token, deliveries]);
 
   return { client, status, error };
 }

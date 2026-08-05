@@ -1,5 +1,19 @@
 # @mebius-io/react
 
+## 0.3.0
+
+### Minor Changes
+
+- `useMebius({ ..., deliveries })` forwards the gateway's delivery list to
+  `@mebius-io/web`, so hooks-based apps get edge playback and the automatic
+  route fallback that ships in web 0.3.0.
+
+  Keep the array reference stable (memoize it) — a new array identity on every
+  render reconnects the client, the same way a changing `token` does.
+
+  `usePlayer(client, {})` is now valid: `mode` is optional and defaults to
+  `"auto"`.
+
 ## 0.2.0
 
 ### Minor Changes

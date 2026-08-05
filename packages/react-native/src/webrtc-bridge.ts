@@ -16,7 +16,12 @@
  * this internal module and never leaks into the public API.
  */
 import { registerNativeBridge, type MebiusNativeBridge, type NativeHandle } from "./bridge.js";
-import type { BroadcasterOptions, MebiusInitOptions, PlaybackMode } from "./types.js";
+import type {
+  BroadcasterOptions,
+  MebiusDelivery,
+  MebiusInitOptions,
+  PlaybackMode,
+} from "./types.js";
 import type { RNMediaStream, RNPeerConnection, RNWebRTCModule } from "./rn-webrtc.js";
 
 // --- Mebius-flavored error (mirrors the facade's MebiusError) -------------
@@ -95,6 +100,7 @@ async function deleteResource(token: string, resourceUrl: string | null): Promis
 interface ClientEntry {
   token: string;
   gateway: string;
+  deliveries: readonly MebiusDelivery[];
 }
 interface BroadcasterEntry {
   client: ClientEntry;
@@ -116,6 +122,30 @@ let counter = 0;
 function nextHandle(prefix: string): NativeHandle {
   counter += 1;
   return `${prefix}_${counter}`;
+}
+
+/**
+ * Resolve the playlist URL for a viewer.
+ *
+ * Prefers a gateway-supplied delivery, which is served from an edge and costs us
+ * nothing per viewer; the origin playlist is the fallback and is billed to us for
+ * every mobile viewer, so it must never be the first choice when an edge route
+ * was offered. Deliveries whose path is not plainly gateway-relative are ignored
+ * rather than fetched — an absolute path there would send the viewer's token to a
+ * host we did not choose.
+ */
+function playbackUrl(client: ClientEntry, streamId: string): string {
+  const base = client.gateway.replace(/\/+$/, "");
+  const token = `token=${encodeURIComponent(client.token)}`;
+  const usable = client.deliveries.find(
+    (d) =>
+      (d.kind === "wide" || d.kind === "local") &&
+      d.path.startsWith("/") &&
+      !d.path.startsWith("//") &&
+      !d.path.includes("://"),
+  );
+  const path = usable?.path ?? `/live/${encodeURIComponent(streamId)}/index.m3u8`;
+  return `${base}${path}${path.includes("?") ? "&" : "?"}${token}`;
 }
 
 function rtcConfig(): Record<string, unknown> {
@@ -150,10 +180,10 @@ export function createWebRTCBridge(rtc: RNWebRTCModule): MebiusNativeBridge {
       config = { ...options };
     },
 
-    async connect(token: string): Promise<NativeHandle> {
+    async connect(token: string, deliveries: readonly MebiusDelivery[] = []): Promise<NativeHandle> {
       if (!config) throw new BridgeError("UNKNOWN", "Call Mebius.init() before connect().");
       const handle = nextHandle("client");
-      clients.set(handle, { token, gateway: config.gateway });
+      clients.set(handle, { token, gateway: config.gateway, deliveries });
       return handle;
     },
 
@@ -237,11 +267,16 @@ export function createWebRTCBridge(rtc: RNWebRTCModule): MebiusNativeBridge {
       void viewTag;
       const entry = players.get(handle);
       if (!entry) throw new BridgeError("NOT_CONNECTED", "Unknown player handle.");
-      if (entry.mode === "scale") {
-        // Scale playback uses a playlist; render it with a video component pointed
-        // at the playlist rather than a peer connection. The bridge surfaces the URL.
-        const base = entry.client.gateway.replace(/\/+$/, "");
-        emit(entry, "stream", { url: `${base}/hls/${encodeURIComponent(streamId)}/index.m3u8`, kind: "scale" });
+      if (entry.mode === "scale" || entry.mode === "auto") {
+        // Playlist playback: render with a video component pointed at the URL
+        // rather than a peer connection. The bridge surfaces the URL.
+        //
+        // Two bugs lived in the previous three lines. It built `/hls/{id}/index.m3u8`,
+        // a prefix the gateway has never routed or allowlisted, and it attached no
+        // `?token=`, which the playback gate requires — so this path could only ever
+        // 404 or 401. It now uses the gateway's own delivery list and falls back to
+        // the origin playlist the gateway does route.
+        emit(entry, "stream", { url: playbackUrl(entry.client, streamId), kind: entry.mode });
         return;
       }
       const pc = new rtc.RTCPeerConnection(rtcConfig());
