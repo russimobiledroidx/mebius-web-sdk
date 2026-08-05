@@ -4,6 +4,7 @@ import { resolveVideoElement } from "./internal/view-target.js";
 import type { SignalingClient } from "./internal/signaling.js";
 import { createViewCandidates, type ViewTransport } from "./internal/transport.js";
 import { QoeReporter, type TelemetryTarget } from "./internal/telemetry.js";
+import { resetVideoElement } from "./internal/autoplay.js";
 import type { MebiusDelivery, PlayerOptions, ViewTarget } from "./types.js";
 
 const STATS_INTERVAL_MS = 2000;
@@ -60,6 +61,12 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     let lastError: unknown = null;
     for (const candidate of this.candidates) {
       try {
+        // Hand every route a clean element. Routes attach differently — a
+        // MediaStream via srcObject, a playlist via src, MSE via attachMedia —
+        // and while srcObject is set the element ignores src entirely. Without
+        // this, one failed real-time attempt kept every later route black while
+        // its own logs looked healthy.
+        resetVideoElement(video);
         this.attach(candidate);
         await candidate.start(streamId, video);
         // start() resolving only means the route was opened, not that it is
