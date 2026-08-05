@@ -30,6 +30,57 @@ import { playWithAutoplayFallback } from "./autoplay.js";
 type FlvModule = typeof import("flv.js");
 type FlvPlayer = ReturnType<FlvModule["default"]["createPlayer"]>;
 
+/**
+ * flv.js tuned for live rather than for its VOD defaults.
+ *
+ * The defaults cost us both things this route exists to provide:
+ *   - `enableStashBuffer: true` with a 384KB initial stash holds bytes in the IO
+ *     layer before any of them reach MSE. At a webcam's ~400kbps that is ~8s of
+ *     nothing on screen — past the player's first-frame watchdog, so a perfectly
+ *     healthy stream got dropped as "delivered no video", and when it did start,
+ *     the stash was pure added delay.
+ *   - `lazyLoad: true` aborts the HTTP connection once 3 minutes are buffered.
+ *     For live that reconnect is a fresh 302 through the gateway and a fresh
+ *     stall for the viewer, buying nothing.
+ * The cleanup pair keeps the SourceBuffer from growing without bound over a long
+ * watch; `reuseRedirectedURL` keeps a reconnect on the signed CDN URL we were
+ * already handed instead of re-running the gateway redirect.
+ */
+const LIVE_FLV_CONFIG = {
+  enableStashBuffer: false,
+  stashInitialSize: 128,
+  lazyLoad: false,
+  autoCleanupSourceBuffer: true,
+  autoCleanupMaxBackwardDuration: 30,
+  autoCleanupMinBackwardDuration: 10,
+  reuseRedirectedURL: true,
+} as const;
+
+/**
+ * Seconds behind the newest buffered byte before we skip forward.
+ *
+ * flv.js does not chase the live edge (that is mpegts.js). Without this, every
+ * stall the network hands us is permanent latency: the player resumes where it
+ * paused and stays that far behind for the rest of the session, so a viewer who
+ * hit two stalls is minutes behind by the end. Bounded at 2s — below that the
+ * skip is more visible than the delay it removes.
+ */
+const MAX_DRIFT_S = 2;
+/** Where to land when skipping: short of the edge, or we starve immediately. */
+const EDGE_MARGIN_S = 0.4;
+
+/**
+ * Skip to the live edge when playback has fallen behind it. Exported for test;
+ * a no-op when the gap is small, so it is safe on every `timeupdate`.
+ */
+export function chaseLiveEdge(video: HTMLVideoElement): void {
+  const ranges = video.buffered;
+  if (ranges.length === 0) return;
+  const edge = ranges.end(ranges.length - 1);
+  if (edge - video.currentTime <= MAX_DRIFT_S) return;
+  video.currentTime = edge - EDGE_MARGIN_S;
+}
+
 export class FlvViewTransport implements ViewTransport {
   private player: FlvPlayer | null = null;
   private video: HTMLVideoElement | null = null;
@@ -55,6 +106,7 @@ export class FlvViewTransport implements ViewTransport {
 
     video.addEventListener("ended", () => this.endedCb?.());
     video.addEventListener("waiting", () => this.bufferingCb?.());
+    video.addEventListener("timeupdate", () => chaseLiveEdge(video));
 
     let mod: FlvModule;
     try {
@@ -72,7 +124,7 @@ export class FlvViewTransport implements ViewTransport {
       throw mebiusError("CONNECTION_FAILED", "Balanced playback is not supported in this browser.");
     }
 
-    const player = flvjs.createPlayer({ type: "flv", url, isLive: true });
+    const player = flvjs.createPlayer({ type: "flv", url, isLive: true }, LIVE_FLV_CONFIG);
     this.player = player;
     player.on(flvjs.Events.ERROR ?? "error", () => this.bufferingCb?.());
     player.attachMediaElement(video);
