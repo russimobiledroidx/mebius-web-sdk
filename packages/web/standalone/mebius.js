@@ -43032,17 +43032,103 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
   }
 
+  // src/internal/telemetry.ts
+  var SDK_VERSION = "web/0.4.0";
+  var FLUSH_INTERVAL_MS = 15e3;
+  var MAX_BATCH = 64;
+  function describeDevice() {
+    const nav = typeof navigator === "undefined" ? void 0 : navigator;
+    const uaData = nav == null ? void 0 : nav.userAgentData;
+    return { os: (uaData == null ? void 0 : uaData.platform) || (nav == null ? void 0 : nav.platform) || void 0, sdk: SDK_VERSION };
+  }
+  function describeNetwork() {
+    const conn = typeof navigator === "undefined" ? void 0 : navigator.connection;
+    return (conn == null ? void 0 : conn.effectiveType) ? { type: conn.effectiveType } : void 0;
+  }
+  var QoeReporter = class {
+    constructor(target, role, streamId, userId) {
+      this.target = target;
+      this.role = role;
+      this.streamId = streamId;
+      this.userId = userId;
+      this.sessionId = randomId();
+      this.buffer = [];
+      this.timer = null;
+      this.unloadHandler = null;
+    }
+    start() {
+      if (this.timer) return;
+      this.timer = setInterval(() => void this.flush(), FLUSH_INTERVAL_MS);
+      if (typeof window !== "undefined") {
+        this.unloadHandler = () => void this.flush(true);
+        window.addEventListener("pagehide", this.unloadHandler);
+      }
+    }
+    add(sample) {
+      this.buffer.push(sample);
+      if (this.buffer.length >= MAX_BATCH) void this.flush();
+    }
+    async stop() {
+      if (this.timer) clearInterval(this.timer);
+      this.timer = null;
+      if (this.unloadHandler && typeof window !== "undefined") {
+        window.removeEventListener("pagehide", this.unloadHandler);
+      }
+      this.unloadHandler = null;
+      await this.flush();
+    }
+    /** Send and clear the buffer. `beacon` uses sendBeacon, for page-unload flushes. */
+    async flush(beacon = false) {
+      if (!this.buffer.length) return;
+      const samples = this.buffer.splice(0, MAX_BATCH);
+      const body = JSON.stringify({
+        sessionId: this.sessionId,
+        streamId: this.streamId,
+        role: this.role,
+        userId: this.userId,
+        samples,
+        device: describeDevice(),
+        network: describeNetwork()
+      });
+      if (beacon && typeof navigator !== "undefined" && navigator.sendBeacon) {
+        const url = `${this.target.url}${this.target.url.includes("?") ? "&" : "?"}token=${encodeURIComponent(this.target.token)}`;
+        try {
+          navigator.sendBeacon(url, new Blob([body], { type: "application/json" }));
+        } catch (e) {
+        }
+        return;
+      }
+      try {
+        await fetch(this.target.url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.target.token}` },
+          body,
+          keepalive: true
+        });
+      } catch (e) {
+      }
+    }
+  };
+  function randomId() {
+    const c = typeof crypto === "undefined" ? void 0 : crypto;
+    if (c == null ? void 0 : c.randomUUID) return c.randomUUID();
+    return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
   // src/broadcaster.ts
   var STATS_INTERVAL_MS = 2e3;
   var MebiusBroadcaster = class extends TypedEmitter {
     /** @internal */
-    constructor(signaling, options) {
+    constructor(signaling, options, telemetry = null, userId) {
       super();
       this.options = options;
+      this.telemetry = telemetry;
+      this.userId = userId;
       this.stream = null;
       this.facingMode = "user";
       this.statsTimer = null;
       this.started = false;
+      this.reporter = null;
       this.transport = createPublishTransport(signaling);
     }
     /** Begin broadcasting under the given stream id. */
@@ -43051,15 +43137,21 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.stream = await this.capture();
       await this.transport.start(streamId, this.stream);
       this.started = true;
+      if (this.telemetry) {
+        this.reporter = new QoeReporter(this.telemetry, "pub", streamId, this.userId);
+        this.reporter.start();
+      }
       this.startStats();
       this.emit("started", { streamId });
     }
     /** Stop broadcasting and release the camera/microphone. */
     async stop() {
-      var _a;
+      var _a, _b;
       this.stopStats();
+      await ((_a = this.reporter) == null ? void 0 : _a.stop());
+      this.reporter = null;
       await this.transport.stop();
-      (_a = this.stream) == null ? void 0 : _a.getTracks().forEach((t) => t.stop());
+      (_b = this.stream) == null ? void 0 : _b.getTracks().forEach((t) => t.stop());
       this.stream = null;
       this.started = false;
       this.emit("stopped", void 0);
@@ -43115,8 +43207,16 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
     startStats() {
       this.statsTimer = setInterval(async () => {
+        var _a;
         const stats = await this.transport.getStats();
-        if (stats) this.emit("stats", stats);
+        if (!stats) return;
+        this.emit("stats", stats);
+        (_a = this.reporter) == null ? void 0 : _a.add({
+          ts: Math.floor(Date.now() / 1e3),
+          bitrateKbps: stats.bitrateKbps,
+          fps: stats.framesPerSecond,
+          rttMs: stats.rttMs
+        });
       }, STATS_INTERVAL_MS);
     }
     stopStats() {
@@ -43134,13 +43234,16 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   var FIRST_FRAME_TIMEOUT_MS = 8e3;
   var MebiusPlayer = class extends TypedEmitter {
     /** @internal */
-    constructor(signaling, options = {}, deliveries = []) {
+    constructor(signaling, options = {}, deliveries = [], telemetry = null, userId) {
       var _a;
       super();
+      this.telemetry = telemetry;
+      this.userId = userId;
       this.transport = null;
       this.video = null;
       this.statsTimer = null;
       this.playing = false;
+      this.reporter = null;
       this.candidates = createViewCandidates((_a = options.mode) != null ? _a : "auto", signaling, deliveries);
     }
     /** Start playing `streamId` into the given video element or selector. */
@@ -43148,6 +43251,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       if (this.playing) return;
       const video = resolveVideoElement(viewTarget);
       this.video = video;
+      const startedAtMs = Date.now();
       let lastError = null;
       for (const candidate of this.candidates) {
         try {
@@ -43156,6 +43260,11 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
           if (await hasFirstFrame(video)) {
             this.transport = candidate;
             this.playing = true;
+            if (this.telemetry) {
+              this.reporter = new QoeReporter(this.telemetry, "play", streamId, this.userId);
+              this.reporter.start();
+              this.reporter.add({ ts: Math.floor(Date.now() / 1e3), firstFrameMs: Date.now() - startedAtMs });
+            }
             this.startStats();
             this.emit("playing", { streamId });
             return;
@@ -43171,9 +43280,11 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
     /** Stop playback and detach from the video element. */
     async stop() {
-      var _a;
+      var _a, _b;
       this.stopStats();
-      await ((_a = this.transport) == null ? void 0 : _a.stop());
+      await ((_a = this.reporter) == null ? void 0 : _a.stop());
+      this.reporter = null;
+      await ((_b = this.transport) == null ? void 0 : _b.stop());
       this.transport = null;
       this.video = null;
       this.playing = false;
@@ -43185,9 +43296,12 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
     attach(transport) {
       transport.onEnded(() => {
+        var _a;
         if (this.transport !== transport) return;
         this.playing = false;
         this.stopStats();
+        void ((_a = this.reporter) == null ? void 0 : _a.stop());
+        this.reporter = null;
         this.emit("ended", void 0);
       });
       transport.onBuffering(() => {
@@ -43197,9 +43311,15 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
     startStats() {
       this.statsTimer = setInterval(async () => {
-        var _a;
+        var _a, _b;
         const stats = await ((_a = this.transport) == null ? void 0 : _a.getStats());
-        if (stats) this.emit("stats", stats);
+        if (!stats) return;
+        this.emit("stats", stats);
+        (_b = this.reporter) == null ? void 0 : _b.add({
+          ts: Math.floor(Date.now() / 1e3),
+          bitrateKbps: stats.bitrateKbps,
+          fps: stats.framesPerSecond
+        });
       }, STATS_INTERVAL_MS2);
     }
     stopStats() {
@@ -43335,10 +43455,12 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   // src/client.ts
   var MebiusClient = class extends TypedEmitter {
     /** @internal */
-    constructor(config2, token, deliveries = []) {
+    constructor(config2, token, deliveries = [], telemetry = null, userId) {
       super();
       this.token = token;
       this.deliveries = deliveries;
+      this.telemetry = telemetry;
+      this.userId = userId;
       this.expiryTimer = null;
       this.connected = false;
       this.signaling = new SignalingClient(config2.gateway, token);
@@ -43363,12 +43485,12 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     /** Create a broadcaster bound to this connection. */
     createBroadcaster(options = {}) {
       this.assertConnected();
-      return new MebiusBroadcaster(this.signaling, options);
+      return new MebiusBroadcaster(this.signaling, options, this.telemetry, this.userId);
     }
     /** Create a player bound to this connection. */
     createPlayer(options = {}) {
       this.assertConnected();
-      return new MebiusPlayer(this.signaling, options, this.deliveries);
+      return new MebiusPlayer(this.signaling, options, this.deliveries, this.telemetry, this.userId);
     }
     /**
      * Create a monitor: a player tuned for watching a stream you are interacting
@@ -43383,7 +43505,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      */
     createMonitor() {
       this.assertConnected();
-      return new MebiusPlayer(this.signaling, { mode: "low-latency" }, this.deliveries);
+      return new MebiusPlayer(this.signaling, { mode: "low-latency" }, this.deliveries, this.telemetry, this.userId);
     }
     /** Close the connection and release resources. */
     disconnect(reason) {
@@ -43417,7 +43539,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         throw mebiusError("UNKNOWN", "Call Mebius.init() before Mebius.connect().");
       }
       if (!options.token) throw mebiusError("UNKNOWN", "Mebius.connect requires a token.");
-      const client = new MebiusClient(config, options.token, (_a = options.deliveries) != null ? _a : []);
+      const telemetry = options.beaconToken && options.beaconUrl ? { token: options.beaconToken, url: options.beaconUrl } : null;
+      const client = new MebiusClient(config, options.token, (_a = options.deliveries) != null ? _a : [], telemetry, options.userId);
       client.open();
       return client;
     },
