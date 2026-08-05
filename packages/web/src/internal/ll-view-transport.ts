@@ -9,12 +9,16 @@ import { mebiusError } from "../errors.js";
 import type { SignalingClient } from "./signaling.js";
 import type { ViewTransport } from "./transport.js";
 import { DEFAULT_RTC_CONFIG, waitForIceGathering } from "./webrtc-util.js";
+import { playWithAutoplayFallback, resetVideoElement } from "./autoplay.js";
 
 export class WhepViewTransport implements ViewTransport {
   private pc: RTCPeerConnection | null = null;
   private resourceUrl: string | null = null;
   private endedCb: (() => void) | null = null;
   private bufferingCb: (() => void) | null = null;
+
+  /** Element this route attached a MediaStream to, so stop() can release it. */
+  private video: HTMLVideoElement | null = null;
 
   constructor(private readonly signaling: SignalingClient) {}
 
@@ -27,6 +31,7 @@ export class WhepViewTransport implements ViewTransport {
   }
 
   async start(streamId: string, video: HTMLVideoElement): Promise<void> {
+    this.video = video;
     const pc = new RTCPeerConnection(DEFAULT_RTC_CONFIG);
     this.pc = pc;
     const remote = new MediaStream();
@@ -37,9 +42,16 @@ export class WhepViewTransport implements ViewTransport {
     pc.ontrack = (ev) => {
       remote.addTrack(ev.track);
       video.srcObject = remote;
-      void video.play().catch(() => {
-        /* autoplay may require a user gesture; left to the app */
-      });
+      // Muted retry rather than giving up: "left to the app" meant a viewer saw a
+      // black rectangle and the app was told nothing.
+      void playWithAutoplayFallback(video)
+        .then((o) => {
+          this.mutedByPolicy = o.mutedByPolicy;
+        })
+        .catch(() => {
+          /* a genuine failure here surfaces as no first frame, which the player's
+             route watchdog already handles */
+        });
     };
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
@@ -69,7 +81,15 @@ export class WhepViewTransport implements ViewTransport {
     this.resourceUrl = null;
     this.pc?.close();
     this.pc = null;
+    // Release the element's MediaStream. While srcObject is set the element
+    // ignores `src`, so leaving it behind stops the next route (HLS/FLV) from
+    // ever rendering — a black picture with a perfectly healthy playlist.
+    if (this.video) resetVideoElement(this.video);
+    this.video = null;
   }
+
+  /** True when playback only started because the element had to be muted. */
+  mutedByPolicy = false;
 
   async getStats(): Promise<PlaybackStats | null> {
     if (!this.pc) return null;

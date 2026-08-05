@@ -25,6 +25,7 @@ import type { PlaybackStats } from "../types.js";
 import { mebiusError } from "../errors.js";
 import type { SignalingClient } from "./signaling.js";
 import type { ViewTransport } from "./transport.js";
+import { playWithAutoplayFallback } from "./autoplay.js";
 
 type FlvModule = typeof import("flv.js");
 type FlvPlayer = ReturnType<FlvModule["default"]["createPlayer"]>;
@@ -76,8 +77,12 @@ export class FlvViewTransport implements ViewTransport {
     player.on(flvjs.Events.ERROR ?? "error", () => this.bufferingCb?.());
     player.attachMediaElement(video);
     player.load();
-    await Promise.resolve(player.play()).catch(() => undefined);
+    // flv.js delegates to the element, so the same autoplay policy applies.
+    this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
   }
+
+  /** True when playback only started because the element had to be muted. */
+  mutedByPolicy = false;
 
   async stop(): Promise<void> {
     if (this.player) {
