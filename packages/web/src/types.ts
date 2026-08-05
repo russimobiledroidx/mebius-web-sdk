@@ -46,6 +46,20 @@ export interface MebiusConnectOptions {
    * Mebius origin rather than the nearest edge.
    */
   deliveries?: MebiusDelivery[];
+  /**
+   * Quality reporting credential from the same token response
+   * (`beaconToken`). Pass it through and Mebius shows this stream's publish and
+   * playback quality in your dashboard, and counts viewer minutes from it.
+   *
+   * Optional: without it the stream works exactly the same, you just see no
+   * quality data for it. Safe in the client — it can only report telemetry for
+   * this one stream.
+   */
+  beaconToken?: string;
+  /** Where to report it, from the same token response (`beaconUrl`). */
+  beaconUrl?: string;
+  /** Your own id for the person on this connection, if you want it in reports. */
+  userId?: string;
 }
 
 /** A media capture constraint: enable/disable, or a detailed constraint set. */

@@ -3,6 +3,7 @@ import { TypedEmitter, type BroadcasterEventMap } from "./events.js";
 import { resolveVideoElement } from "./internal/view-target.js";
 import type { SignalingClient } from "./internal/signaling.js";
 import { createPublishTransport, type PublishTransport } from "./internal/transport.js";
+import { QoeReporter, type TelemetryTarget } from "./internal/telemetry.js";
 import type { BroadcasterOptions, MediaConstraint, ViewTarget } from "./types.js";
 
 const STATS_INTERVAL_MS = 2000;
@@ -19,11 +20,14 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
   private facingMode: "user" | "environment" = "user";
   private statsTimer: ReturnType<typeof setInterval> | null = null;
   private started = false;
+  private reporter: QoeReporter | null = null;
 
   /** @internal */
   constructor(
     signaling: SignalingClient,
     private readonly options: BroadcasterOptions,
+    private readonly telemetry: TelemetryTarget | null = null,
+    private readonly userId?: string,
   ) {
     super();
     this.transport = createPublishTransport(signaling);
@@ -35,6 +39,12 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
     this.stream = await this.capture();
     await this.transport.start(streamId, this.stream);
     this.started = true;
+    // Report against the id the caller published under, so a sample can be traced
+    // back to the stream row the dashboard shows.
+    if (this.telemetry) {
+      this.reporter = new QoeReporter(this.telemetry, "pub", streamId, this.userId);
+      this.reporter.start();
+    }
     this.startStats();
     this.emit("started", { streamId });
   }
@@ -42,6 +52,10 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
   /** Stop broadcasting and release the camera/microphone. */
   async stop(): Promise<void> {
     this.stopStats();
+    // Flush before tearing down the transport: the last interval of a broadcast is
+    // the one most likely to explain why it ended.
+    await this.reporter?.stop();
+    this.reporter = null;
     await this.transport.stop();
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
@@ -103,7 +117,14 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
   private startStats(): void {
     this.statsTimer = setInterval(async () => {
       const stats = await this.transport.getStats();
-      if (stats) this.emit("stats", stats);
+      if (!stats) return;
+      this.emit("stats", stats);
+      this.reporter?.add({
+        ts: Math.floor(Date.now() / 1000),
+        bitrateKbps: stats.bitrateKbps,
+        fps: stats.framesPerSecond,
+        rttMs: stats.rttMs,
+      });
     }, STATS_INTERVAL_MS);
   }
 
