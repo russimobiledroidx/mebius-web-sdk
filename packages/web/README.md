@@ -55,12 +55,12 @@ external deps. `Mebius` becomes a global.
 ```
 
 File + full PHP example: [`standalone/`](./standalone/). Raw download:
-`https://raw.githubusercontent.com/russimobiledroidx/mebius-web-sdk/v0.4.4/packages/web/standalone/mebius.min.js`
+`https://raw.githubusercontent.com/russimobiledroidx/mebius-web-sdk/v0.4.5/packages/web/standalone/mebius.min.js`
 
 The drop-in file is not part of the npm package — `files` ships only `dist` — so it
 is fetched from the tag, and the tag must match the version you installed. For a
 page with a build step, or one that can use an import map, prefer the ESM path:
-`https://esm.sh/@mebius-io/web@0.4.4`.
+`https://esm.sh/@mebius-io/web@0.4.5`.
 
 ## Quick Start
 

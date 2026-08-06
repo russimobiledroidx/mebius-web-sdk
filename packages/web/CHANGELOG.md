@@ -1,5 +1,24 @@
 # @mebius-io/web
 
+## 0.4.5
+
+### Patch Changes
+
+- The audio-less FLV retry no longer costs audio on a slow start, and a failed
+  play() releases the element.
+
+  0.4.3 added a recovery for an FLV header that claims audio the stream does not
+  carry: no frame within 2.5s, retry without audio. "No frame" is also what a
+  cold CDN edge looks like, and the retry is one-way — a stream that simply
+  started slowly played perfectly and silently for the rest of the session.
+  Observed once in testing. The retry now also requires that media has actually
+  landed (`buffered` non-empty with the clock still at zero), which is the real
+  signature of a track that will never arrive.
+
+  Separately: when every route fails, the player now releases ownership of the
+  element it never played into. Otherwise the next player awaited a stop() on a
+  dead one, and the dead one stayed reachable for as long as the element existed.
+
 ## 0.4.4
 
 ### Patch Changes

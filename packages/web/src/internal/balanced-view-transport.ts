@@ -76,8 +76,17 @@ const EDGE_MARGIN_S = 0.4;
  */
 const AUDIO_RETRY_MS = 2500;
 
-/** Resolves true when the element has not started playing within `ms`. */
-function stalledAtZero(video: HTMLVideoElement, ms: number): Promise<boolean> {
+/**
+ * Resolves true when media has landed but playback still cannot start.
+ *
+ * Both halves matter. `currentTime === 0` alone is also what a slow first
+ * segment looks like, and treating that as the audio-lie case drops audio for
+ * the rest of the session on nothing worse than a cold CDN edge — observed
+ * once, as a stream that played perfectly and silently. Buffered data with a
+ * clock that will not move is the actual signature: the demuxer fed the
+ * SourceBuffer and the element is still waiting for a track that never arrives.
+ */
+function stalledWithData(video: HTMLVideoElement, ms: number): Promise<boolean> {
   if (video.currentTime > 0) return Promise.resolve(false);
   return new Promise((resolve) => {
     const done = (stalled: boolean) => {
@@ -88,7 +97,7 @@ function stalledAtZero(video: HTMLVideoElement, ms: number): Promise<boolean> {
     const onTime = () => {
       if (video.currentTime > 0) done(false);
     };
-    const timer = setTimeout(() => done(true), ms);
+    const timer = setTimeout(() => done(video.buffered.length > 0 && video.currentTime === 0), ms);
     video.addEventListener("timeupdate", onTime);
   });
 }
@@ -176,7 +185,7 @@ export class FlvViewTransport implements ViewTransport {
     // DOES send AAC, so it cannot be the default — this only fires once, only
     // when the stream has demonstrably not started, and it is far cheaper than
     // the player's 8s route watchdog for a case that is otherwise unrecoverable.
-    if (await stalledAtZero(video, AUDIO_RETRY_MS)) {
+    if (await stalledWithData(video, AUDIO_RETRY_MS)) {
       this.teardownPlayer();
       this.attachPlayer(flvjs, video, url, false);
       this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
