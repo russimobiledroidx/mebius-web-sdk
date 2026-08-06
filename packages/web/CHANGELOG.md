@@ -1,5 +1,55 @@
 # @mebius-io/web
 
+## 0.4.2
+
+### Patch Changes
+
+- Make a browser broadcast watchable, and cut the join delay on the buffered routes.
+
+  Four defects, found while probing a real publish/watch round trip against
+  production rather than by reading code.
+
+  **A browser broadcast reached non-WebRTC viewers as audio only.** Chrome
+  negotiates VP8 for a WHIP publish; the server's HLS/FLV/CDN muxers cannot carry
+  it and drop the video track (`skipping track 2 (VP8)`). The publisher saw a
+  healthy preview and a correct bitrate the whole time. The SDK now offers H264
+  first, which every delivery path speaks and which costs no server transcode.
+  Measured on the origin playlist: `CODECS="opus"` at 32kbps became
+  `CODECS="avc1.42001e,opus"` at 356kbps, 640x480.
+
+  **The FLV route never started.** flv.js was created with its VOD defaults: a
+  384KB IO stash held bytes before any reached MSE — about 8s at a webcam's
+  bitrate, past the player's own first-frame watchdog, so a healthy stream was
+  rejected as "delivered no video". `lazyLoad` also aborted the connection every
+  3 minutes of buffer, which for live is a reconnect and a stall that buys
+  nothing. Both off; SourceBuffer cleanup on; reconnects reuse the signed CDN URL.
+
+  **An FLV header that claims audio the stream does not carry.** A WebRTC
+  broadcast reaches the CDN as video only (Opus cannot ride in FLV) while the
+  header still advertises audio, and flv.js waits forever for an audio init
+  segment. The route now gives the normal attempt 2.5s and retries without audio
+  only if no frame arrived — a publisher sending real AAC is untouched.
+
+  **Latency only ever grew.** flv.js does not chase the live edge, so every stall
+  became permanent delay; hls.js had `maxLiveSyncPlaybackRate` at its default 1,
+  so it could never catch up either. Both now recover.
+
+  Also fixed: buffered transports left their element listeners behind, and since
+  every candidate route shares one video element, an abandoned route's live-edge
+  chase would seek a healthy playback out from under itself. The unload beacon
+  now sends `text/plain`, which is safelisted — `application/json` forced a CORS
+  preflight at unload, where it frequently never completed and the last batch of
+  every session was silently lost.
+
+  End to end, browser publisher, watched over the CDN:
+
+  | mode | first frame | stalls | drift |
+  | --- | --- | --- | --- |
+  | low-latency | 2158ms | 0 | real-time |
+  | auto | 2908ms | 0 | 0.60s steady |
+  | balanced | 3075ms | 0 | 0.80s steady |
+  | scale | 6745ms | 0 | 5.2s (HLS) |
+
 ## 0.4.1
 
 ### Patch Changes

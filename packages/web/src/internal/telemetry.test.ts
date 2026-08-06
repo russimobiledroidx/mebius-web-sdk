@@ -99,6 +99,9 @@ describe("QoeReporter", () => {
     await r.flush(true);
     expect(sendBeacon).toHaveBeenCalledTimes(1);
     expect(String(sendBeacon.mock.calls[0][0])).toContain("token=beacon-jwt");
+    // A safelisted content type keeps this a simple request: an unload beacon
+    // that needs a CORS preflight first is a beacon that usually never lands.
+    expect((sendBeacon.mock.calls[0][1] as Blob).type).toBe("text/plain");
     expect(fetch).not.toHaveBeenCalled();
   });
 });
