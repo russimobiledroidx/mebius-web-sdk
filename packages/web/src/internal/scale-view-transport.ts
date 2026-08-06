@@ -55,22 +55,32 @@ export class HlsViewTransport implements ViewTransport {
     video.addEventListener("ended", () => this.endedCb?.(), { signal });
     video.addEventListener("waiting", () => this.bufferingCb?.(), { signal });
 
-    // Safari and iOS play HLS natively — no library needed.
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    // Media Source first, native second — NOT the other way round.
+    //
+    // The check used to be `if (video.canPlayType("application/vnd.apple.mpegurl"))`,
+    // and Chromium answers "maybe" to that. "maybe" is a legal answer meaning
+    // "I might, ask me again with codecs", and Chromium says it while being
+    // unable to play a playlist at all — so this route assigned video.src and
+    // died with "NotSupportedError: Failed to load because no supported source
+    // was found", on the browser most viewers use. Asking the library whether
+    // it can drive this browser is a direct question with a direct answer;
+    // canPlayType is neither.
+    let Hls: HlsModule["default"] | null = null;
+    try {
+      Hls = (await import("hls.js")).default;
+    } catch {
+      // Bundling or network problem. Native is then the only chance, and Safari
+      // is exactly the browser where it works.
+      Hls = null;
+    }
+
+    if (!Hls?.isSupported()) {
+      if (!video.canPlayType("application/vnd.apple.mpegurl")) {
+        throw mebiusError("CONNECTION_FAILED", "Scale playback is not supported in this browser.");
+      }
       video.src = url;
       this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
       return;
-    }
-
-    let mod: HlsModule;
-    try {
-      mod = await import("hls.js");
-    } catch (cause) {
-      throw mebiusError("CONNECTION_FAILED", "Scale playback support failed to load.", cause);
-    }
-    const Hls = mod.default;
-    if (!Hls.isSupported()) {
-      throw mebiusError("CONNECTION_FAILED", "Scale playback is not supported in this browser.");
     }
 
     // No forced lowLatencyMode: it is for LL-HLS playlists (EXT-X-PART), and

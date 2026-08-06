@@ -42937,20 +42937,19 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         var _a;
         return (_a = this.bufferingCb) == null ? void 0 : _a.call(this);
       }, { signal });
-      if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      let Hls2 = null;
+      try {
+        Hls2 = (await Promise.resolve().then(() => (init_hls(), hls_exports))).default;
+      } catch (e) {
+        Hls2 = null;
+      }
+      if (!(Hls2 == null ? void 0 : Hls2.isSupported())) {
+        if (!video.canPlayType("application/vnd.apple.mpegurl")) {
+          throw mebiusError("CONNECTION_FAILED", "Scale playback is not supported in this browser.");
+        }
         video.src = url;
         this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
         return;
-      }
-      let mod;
-      try {
-        mod = await Promise.resolve().then(() => (init_hls(), hls_exports));
-      } catch (cause) {
-        throw mebiusError("CONNECTION_FAILED", "Scale playback support failed to load.", cause);
-      }
-      const Hls2 = mod.default;
-      if (!Hls2.isSupported()) {
-        throw mebiusError("CONNECTION_FAILED", "Scale playback is not supported in this browser.");
       }
       const hls = new Hls2({ maxLiveSyncPlaybackRate: 1.5 });
       this.hls = hls;
@@ -43148,7 +43147,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
 
   // src/internal/telemetry.ts
-  var SDK_VERSION = "web/0.4.5";
+  var SDK_VERSION = "web/0.4.6";
   var FLUSH_INTERVAL_MS = 15e3;
   var MAX_BATCH = 64;
   function describeDevice() {
