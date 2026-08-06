@@ -1,5 +1,22 @@
 # @mebius-io/web
 
+## 0.4.4
+
+### Patch Changes
+
+- `setVolume` now unmutes.
+
+  Playback usually starts muted: apps put `muted` in their own markup because
+  browsers refuse to autoplay with sound, and the SDK mutes and retries by
+  itself when autoplay is blocked. `video.volume` does nothing while `muted` is
+  set, so an app whose only audio control was a volume slider could never
+  produce sound — the slider moved, the level read 1, the stream stayed silent,
+  and nothing reported a problem. Reproduced on the drop-in demo against a live
+  OBS stream: audio decoding at 220KB and rising, `muted: true` throughout.
+
+  Any volume above zero clears `muted`; volume zero mutes, so a UI dragged to
+  zero stays silent even if something else unmutes the element.
+
 ## 0.4.3
 
 ### Patch Changes

@@ -43148,7 +43148,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
 
   // src/internal/telemetry.ts
-  var SDK_VERSION = "web/0.4.3";
+  var SDK_VERSION = "web/0.4.4";
   var FLUSH_INTERVAL_MS = 15e3;
   var MAX_BATCH = 64;
   function describeDevice() {
@@ -43429,10 +43429,25 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.video = null;
       this.playing = false;
     }
-    /** Set output volume in the range 0..1. */
+    /**
+     * Set output volume in the range 0..1.
+     *
+     * Any volume above zero also unmutes. Playback often starts muted — the
+     * element may carry `muted` in the app's own markup, and the SDK itself mutes
+     * and retries when the browser refuses to autoplay with sound — and
+     * `video.volume` has no audible effect while `muted` is set. Setting volume
+     * without clearing it meant an app whose only audio control was a slider
+     * could never produce sound: the value moved, the stream stayed silent, and
+     * nothing reported a problem.
+     *
+     * Volume 0 mutes rather than merely turning the level down, so a UI that
+     * drags to zero also survives a later unmute at the element level.
+     */
     setVolume(volume) {
       const v = Math.min(1, Math.max(0, volume));
-      if (this.video) this.video.volume = v;
+      if (!this.video) return;
+      this.video.volume = v;
+      this.video.muted = v === 0;
     }
     attach(transport) {
       transport.onEnded(() => {
