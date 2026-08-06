@@ -42932,7 +42932,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       if (!Hls2.isSupported()) {
         throw mebiusError("CONNECTION_FAILED", "Scale playback is not supported in this browser.");
       }
-      const hls = new Hls2();
+      const hls = new Hls2({ maxLiveSyncPlaybackRate: 1.5 });
       this.hls = hls;
       hls.on(Hls2.Events.ERROR, (_evt, data) => {
         var _a;
@@ -42964,6 +42964,24 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   };
 
   // src/internal/balanced-view-transport.ts
+  var LIVE_FLV_CONFIG = {
+    enableStashBuffer: false,
+    stashInitialSize: 128,
+    lazyLoad: false,
+    autoCleanupSourceBuffer: true,
+    autoCleanupMaxBackwardDuration: 30,
+    autoCleanupMinBackwardDuration: 10,
+    reuseRedirectedURL: true
+  };
+  var MAX_DRIFT_S = 2;
+  var EDGE_MARGIN_S = 0.4;
+  function chaseLiveEdge(video) {
+    const ranges = video.buffered;
+    if (ranges.length === 0) return;
+    const edge = ranges.end(ranges.length - 1);
+    if (edge - video.currentTime <= MAX_DRIFT_S) return;
+    video.currentTime = edge - EDGE_MARGIN_S;
+  }
   var FlvViewTransport = class {
     constructor(signaling, deliveryPath) {
       this.signaling = signaling;
@@ -42993,6 +43011,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         var _a2;
         return (_a2 = this.bufferingCb) == null ? void 0 : _a2.call(this);
       });
+      video.addEventListener("timeupdate", () => chaseLiveEdge(video));
       let mod;
       try {
         mod = await Promise.resolve().then(() => __toESM(require_flv(), 1));
@@ -43003,7 +43022,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       if (!flvjs.isSupported()) {
         throw mebiusError("CONNECTION_FAILED", "Balanced playback is not supported in this browser.");
       }
-      const player = flvjs.createPlayer({ type: "flv", url, isLive: true });
+      const player = flvjs.createPlayer({ type: "flv", url, isLive: true }, LIVE_FLV_CONFIG);
       this.player = player;
       player.on((_a = flvjs.Events.ERROR) != null ? _a : "error", () => {
         var _a2;

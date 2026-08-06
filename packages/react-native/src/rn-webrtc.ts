@@ -38,8 +38,20 @@ export interface RNRtpTransceiverInit {
   direction: "sendrecv" | "sendonly" | "recvonly" | "inactive";
 }
 
+/** Codec descriptor as `RTCRtpSender.getCapabilities` reports it. */
+export interface RNCodecCapability {
+  mimeType: string;
+}
+
+export interface RNRtpTransceiver {
+  sender?: { track?: { kind?: string } | null } | null;
+  setCodecPreferences?(codecs: RNCodecCapability[]): void;
+}
+
 export interface RNPeerConnection {
   addTrack(track: RNMediaStreamTrack, stream: RNMediaStream): unknown;
+  /** Present from react-native-webrtc 111; absent on older hosts. */
+  getTransceivers?(): RNRtpTransceiver[];
   addTransceiver(kind: "audio" | "video", init?: RNRtpTransceiverInit): unknown;
   createOffer(options?: Record<string, unknown>): Promise<RNSessionDescription>;
   setLocalDescription(desc: RNSessionDescription): Promise<void>;
@@ -67,4 +79,8 @@ export interface RNWebRTCModule {
   RTCPeerConnection: RNPeerConnectionCtor;
   RTCSessionDescription: RNSessionDescriptionCtor;
   mediaDevices: RNMediaDevices;
+  /** Present from react-native-webrtc 111; absent on older hosts. */
+  RTCRtpSender?: {
+    getCapabilities?(kind: string): { codecs?: RNCodecCapability[] } | null;
+  };
 }
