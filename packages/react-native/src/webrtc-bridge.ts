@@ -160,10 +160,10 @@ function rtcConfig(): Record<string, unknown> {
 /**
  * Offer H264 ahead of everything else for the outgoing video track.
  *
- * Same reason as the web SDK: libwebrtc offers VP8 first, and the server's
- * HLS/FLV/CDN muxers cannot carry VP8 — they drop the video track and publish
- * an audio-only stream. The broadcast looks healthy on the device and has no
- * picture for anyone watching outside the real-time route.
+ * Same reason as the web SDK: libwebrtc offers VP8 first, and the gateway's
+ * segment-based deliveries cannot carry that codec — they drop the video track
+ * and publish an audio-only stream. The broadcast looks healthy on the device
+ * and has no picture for anyone watching outside the real-time route.
  *
  * Both APIs used here landed in react-native-webrtc 111. On an older host they
  * are simply absent and negotiation keeps its default order, which is the same

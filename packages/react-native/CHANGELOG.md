@@ -1,5 +1,20 @@
 # @mebius-io/react-native
 
+## 0.4.2
+
+### Patch Changes
+
+- Publish H264 instead of VP8.
+
+  Same defect the web SDK carried: libwebrtc offers VP8 first, and the server's
+  HLS/FLV/CDN muxers cannot carry it — they drop the video track, so a broadcast
+  reaches every viewer outside the real-time route as audio only, while the
+  device shows a healthy preview and bitrate throughout.
+
+  Best-effort: `RTCRtpSender.getCapabilities` and `setCodecPreferences` both
+  arrived in react-native-webrtc 111. On an older host they are absent and
+  negotiation keeps its previous order.
+
 ## 0.4.1
 
 ### Patch Changes
