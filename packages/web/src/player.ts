@@ -143,6 +143,13 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
       await candidate.stop().catch(() => undefined);
     }
 
+    // Release the element before giving up. Holding ownership of an element we
+    // are not playing into would make the next player await a stop() on this
+    // dead one, and would keep this player object alive through the map for as
+    // long as the element exists.
+    this.elementListeners?.abort();
+    this.elementListeners = null;
+    if (ELEMENT_OWNER.get(video) === this) ELEMENT_OWNER.delete(video);
     this.video = null;
     throw lastError ?? mebiusError("CONNECTION_FAILED", "No Mebius route could play this stream.");
   }
