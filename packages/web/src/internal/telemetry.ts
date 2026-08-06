@@ -131,7 +131,13 @@ export class QoeReporter {
     if (beacon && typeof navigator !== "undefined" && navigator.sendBeacon) {
       const url = `${this.target.url}${this.target.url.includes("?") ? "&" : "?"}token=${encodeURIComponent(this.target.token)}`;
       try {
-        navigator.sendBeacon(url, new Blob([body], { type: "application/json" }));
+        // text/plain, not application/json: application/json makes this a
+        // non-simple request, so the browser must clear a CORS preflight first —
+        // during unload, when it frequently never completes and the beacon is
+        // dropped without a trace. text/plain is on the safelist and goes
+        // straight out. The server reads the body as JSON either way; content
+        // type is not what it parses on.
+        navigator.sendBeacon(url, new Blob([body], { type: "text/plain" }));
       } catch {
         /* nothing to do at unload */
       }

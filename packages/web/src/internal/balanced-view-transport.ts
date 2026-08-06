@@ -86,6 +86,8 @@ export class FlvViewTransport implements ViewTransport {
   private video: HTMLVideoElement | null = null;
   private endedCb: (() => void) | null = null;
   private bufferingCb: (() => void) | null = null;
+  /** Aborts this attempt's element listeners; see start(). */
+  private listeners: AbortController | null = null;
 
   constructor(
     private readonly signaling: SignalingClient,
@@ -104,9 +106,16 @@ export class FlvViewTransport implements ViewTransport {
     this.video = video;
     const url = this.signaling.deliveryUrl(this.deliveryPath);
 
-    video.addEventListener("ended", () => this.endedCb?.());
-    video.addEventListener("waiting", () => this.bufferingCb?.());
-    video.addEventListener("timeupdate", () => chaseLiveEdge(video));
+    // Bound to this attempt's lifetime. The player hands every candidate route
+    // the SAME element, so listeners left behind by a route that failed keep
+    // firing over the route that succeeded — and an orphaned chaseLiveEdge does
+    // not just report, it SEEKS, yanking a healthy HLS playback around on behalf
+    // of a dead FLV attempt. stop() aborts them.
+    this.listeners = new AbortController();
+    const { signal } = this.listeners;
+    video.addEventListener("ended", () => this.endedCb?.(), { signal });
+    video.addEventListener("waiting", () => this.bufferingCb?.(), { signal });
+    video.addEventListener("timeupdate", () => chaseLiveEdge(video), { signal });
 
     let mod: FlvModule;
     try {
@@ -137,6 +146,8 @@ export class FlvViewTransport implements ViewTransport {
   mutedByPolicy = false;
 
   async stop(): Promise<void> {
+    this.listeners?.abort();
+    this.listeners = null;
     if (this.player) {
       this.player.unload();
       this.player.detachMediaElement();

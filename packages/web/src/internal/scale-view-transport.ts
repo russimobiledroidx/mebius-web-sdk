@@ -20,6 +20,8 @@ export class HlsViewTransport implements ViewTransport {
   private video: HTMLVideoElement | null = null;
   private endedCb: (() => void) | null = null;
   private bufferingCb: (() => void) | null = null;
+  /** Aborts this attempt's element listeners; see start(). */
+  private listeners: AbortController | null = null;
 
   /**
    * deliveryPath, when given, is a gateway-relative path from the gateway's own
@@ -46,8 +48,12 @@ export class HlsViewTransport implements ViewTransport {
       ? this.signaling.deliveryUrl(this.deliveryPath)
       : this.signaling.scalePlaylistUrl(streamId);
 
-    video.addEventListener("ended", () => this.endedCb?.());
-    video.addEventListener("waiting", () => this.bufferingCb?.());
+    // Same reason as the FLV route: every candidate shares one element, so a
+    // failed attempt's listeners must not outlive it.
+    this.listeners = new AbortController();
+    const { signal } = this.listeners;
+    video.addEventListener("ended", () => this.endedCb?.(), { signal });
+    video.addEventListener("waiting", () => this.bufferingCb?.(), { signal });
 
     // Safari and iOS play HLS natively — no library needed.
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
@@ -87,6 +93,8 @@ export class HlsViewTransport implements ViewTransport {
   mutedByPolicy = false;
 
   async stop(): Promise<void> {
+    this.listeners?.abort();
+    this.listeners = null;
     this.hls?.destroy();
     this.hls = null;
     if (this.video) {

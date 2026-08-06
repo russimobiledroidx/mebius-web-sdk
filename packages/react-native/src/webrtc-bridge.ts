@@ -22,7 +22,12 @@ import type {
   MebiusInitOptions,
   PlaybackMode,
 } from "./types.js";
-import type { RNMediaStream, RNPeerConnection, RNWebRTCModule } from "./rn-webrtc.js";
+import type {
+  RNCodecCapability,
+  RNMediaStream,
+  RNPeerConnection,
+  RNWebRTCModule,
+} from "./rn-webrtc.js";
 
 // --- Mebius-flavored error (mirrors the facade's MebiusError) -------------
 
@@ -153,6 +158,35 @@ function rtcConfig(): Record<string, unknown> {
 }
 
 /**
+ * Offer H264 ahead of everything else for the outgoing video track.
+ *
+ * Same reason as the web SDK: libwebrtc offers VP8 first, and the server's
+ * HLS/FLV/CDN muxers cannot carry VP8 — they drop the video track and publish
+ * an audio-only stream. The broadcast looks healthy on the device and has no
+ * picture for anyone watching outside the real-time route.
+ *
+ * Both APIs used here landed in react-native-webrtc 111. On an older host they
+ * are simply absent and negotiation keeps its default order, which is the same
+ * behaviour this SDK had before.
+ */
+export function preferH264(rtc: RNWebRTCModule, pc: RNPeerConnection): void {
+  const codecs = rtc.RTCRtpSender?.getCapabilities?.("video")?.codecs;
+  if (!codecs?.length || !pc.getTransceivers) return;
+  const isH264 = (c: RNCodecCapability) => c.mimeType.toLowerCase() === "video/h264";
+  const h264 = codecs.filter(isH264);
+  if (h264.length === 0) return;
+  const ordered = [...h264, ...codecs.filter((c) => !isH264(c))];
+  for (const tr of pc.getTransceivers()) {
+    if (tr.sender?.track?.kind !== "video") continue;
+    try {
+      tr.setCodecPreferences?.(ordered);
+    } catch {
+      // A host that rejects the list negotiates its own way.
+    }
+  }
+}
+
+/**
  * Build a {@link MebiusNativeBridge} backed by `react-native-webrtc`.
  * Exposed for testing / advanced wiring; most apps call
  * {@link registerWebRTCBridge} instead.
@@ -212,6 +246,7 @@ export function createWebRTCBridge(rtc: RNWebRTCModule): MebiusNativeBridge {
       }
       const pc = new rtc.RTCPeerConnection(rtcConfig());
       for (const track of stream.getTracks()) pc.addTrack(track, stream);
+      preferH264(rtc, pc);
       const offer = await pc.createOffer({});
       await pc.setLocalDescription(offer);
       const { answerSdp, resourceUrl } = await exchangeSdp(
