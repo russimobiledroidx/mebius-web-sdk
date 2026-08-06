@@ -43148,7 +43148,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
 
   // src/internal/telemetry.ts
-  var SDK_VERSION = "web/0.4.2";
+  var SDK_VERSION = "web/0.4.3";
   var FLUSH_INTERVAL_MS = 15e3;
   var MAX_BATCH = 64;
   function describeDevice() {
@@ -43347,6 +43347,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   // src/player.ts
   var STATS_INTERVAL_MS2 = 2e3;
   var FIRST_FRAME_TIMEOUT_MS = 8e3;
+  var ELEMENT_OWNER = /* @__PURE__ */ new WeakMap();
   var MebiusPlayer = class extends TypedEmitter {
     /** @internal */
     constructor(signaling, options = {}, deliveries = [], telemetry = null, userId) {
@@ -43359,13 +43360,30 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.statsTimer = null;
       this.playing = false;
       this.reporter = null;
+      /** True between a `buffering` event and the element actually resuming. */
+      this.stalled = false;
+      /** Cancels element listeners bound for the lifetime of one play(). */
+      this.elementListeners = null;
       this.candidates = createViewCandidates((_a = options.mode) != null ? _a : "auto", signaling, deliveries);
     }
     /** Start playing `streamId` into the given video element or selector. */
     async play(streamId, viewTarget) {
       if (this.playing) return;
       const video = resolveVideoElement(viewTarget);
+      const previous = ELEMENT_OWNER.get(video);
+      if (previous && previous !== this) await previous.stop();
+      ELEMENT_OWNER.set(video, this);
       this.video = video;
+      this.elementListeners = new AbortController();
+      video.addEventListener(
+        "playing",
+        () => {
+          if (!this.stalled || !this.playing) return;
+          this.stalled = false;
+          this.emit("playing", { streamId });
+        },
+        { signal: this.elementListeners.signal }
+      );
       const startedAtMs = Date.now();
       let lastError = null;
       for (const candidate of this.candidates) {
@@ -43396,11 +43414,17 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
     /** Stop playback and detach from the video element. */
     async stop() {
-      var _a, _b;
+      var _a, _b, _c;
+      (_a = this.elementListeners) == null ? void 0 : _a.abort();
+      this.elementListeners = null;
+      if (this.video && ELEMENT_OWNER.get(this.video) === this) {
+        ELEMENT_OWNER.delete(this.video);
+      }
+      this.stalled = false;
       this.stopStats();
-      await ((_a = this.reporter) == null ? void 0 : _a.stop());
+      await ((_b = this.reporter) == null ? void 0 : _b.stop());
       this.reporter = null;
-      await ((_b = this.transport) == null ? void 0 : _b.stop());
+      await ((_c = this.transport) == null ? void 0 : _c.stop());
       this.transport = null;
       this.video = null;
       this.playing = false;
@@ -43422,6 +43446,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       });
       transport.onBuffering(() => {
         if (this.transport !== transport) return;
+        this.stalled = true;
         this.emit("buffering", void 0);
       });
     }

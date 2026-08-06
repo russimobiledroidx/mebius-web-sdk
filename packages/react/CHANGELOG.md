@@ -1,5 +1,13 @@
 # @mebius-io/react
 
+## 0.4.3
+
+### Patch Changes
+
+- Bumped to pick up @mebius-io/web 0.4.3, which closes the buffering/playing
+  event pair and stops a second player from orphaning the first on the same
+  element. The dependency is an exact pin.
+
 ## 0.4.2
 
 ### Patch Changes

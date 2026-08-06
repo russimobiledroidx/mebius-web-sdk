@@ -1,5 +1,31 @@
 # @mebius-io/web
 
+## 0.4.3
+
+### Patch Changes
+
+- Two defects a viewer sees directly, both reported against smooth video.
+
+  **"buffering" never turned off.** `buffering` had no counterpart event, so an
+  app that showed a spinner on it had nothing to hide the spinner on. One
+  transient stall — normal at join — left the UI reading "buffering" over
+  perfectly smooth playback for the rest of the session. Measured against a live
+  OBS stream: `readyState` 4, `currentTime` advancing 2s every 2s, status stuck.
+  `playing` is now re-emitted when the element resumes, so the pair closes.
+  Consumers already handle `playing`; no new event to learn.
+
+  **A second play() on the same element flooded the console.** Pressing play
+  twice, or a component remounting, left the first player running: the new one
+  resets the element, which detaches the old MediaSource and removes its
+  SourceBuffers, and the orphan then polls buffers that belong to nothing —
+  237 unhandled rejections in an 8-second window:
+
+      InvalidStateError: Failed to read the 'buffered' property from
+      'SourceBuffer': This SourceBuffer has been removed from the parent media
+      source.
+
+  An element has one owner now, and taking ownership stops the previous player.
+
 ## 0.4.2
 
 ### Patch Changes
