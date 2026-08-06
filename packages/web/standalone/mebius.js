@@ -42707,6 +42707,21 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   };
 
   // src/internal/publish-transport.ts
+  function preferH264(pc) {
+    var _a, _b, _c;
+    const caps = (_a = RTCRtpSender.getCapabilities) == null ? void 0 : _a.call(RTCRtpSender, "video");
+    if (!(caps == null ? void 0 : caps.codecs)) return;
+    const h264 = caps.codecs.filter((c) => c.mimeType.toLowerCase() === "video/h264");
+    if (h264.length === 0) return;
+    const rest = caps.codecs.filter((c) => c.mimeType.toLowerCase() !== "video/h264");
+    for (const tr of pc.getTransceivers()) {
+      if (((_b = tr.sender.track) == null ? void 0 : _b.kind) !== "video") continue;
+      try {
+        (_c = tr.setCodecPreferences) == null ? void 0 : _c.call(tr, [...h264, ...rest]);
+      } catch (e) {
+      }
+    }
+  }
   var WhipPublishTransport = class {
     constructor(signaling) {
       this.signaling = signaling;
@@ -42720,6 +42735,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       for (const track of stream.getTracks()) {
         pc.addTrack(track, stream);
       }
+      preferH264(pc);
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await waitForIceGathering(pc);
@@ -42897,6 +42913,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.video = null;
       this.endedCb = null;
       this.bufferingCb = null;
+      /** Aborts this attempt's element listeners; see start(). */
+      this.listeners = null;
       /** True when playback only started because the element had to be muted. */
       this.mutedByPolicy = false;
     }
@@ -42909,14 +42927,16 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     async start(streamId, video) {
       this.video = video;
       const url = this.deliveryPath ? this.signaling.deliveryUrl(this.deliveryPath) : this.signaling.scalePlaylistUrl(streamId);
+      this.listeners = new AbortController();
+      const { signal } = this.listeners;
       video.addEventListener("ended", () => {
         var _a;
         return (_a = this.endedCb) == null ? void 0 : _a.call(this);
-      });
+      }, { signal });
       video.addEventListener("waiting", () => {
         var _a;
         return (_a = this.bufferingCb) == null ? void 0 : _a.call(this);
-      });
+      }, { signal });
       if (video.canPlayType("application/vnd.apple.mpegurl")) {
         video.src = url;
         this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
@@ -42943,8 +42963,10 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
     }
     async stop() {
-      var _a;
-      (_a = this.hls) == null ? void 0 : _a.destroy();
+      var _a, _b;
+      (_a = this.listeners) == null ? void 0 : _a.abort();
+      this.listeners = null;
+      (_b = this.hls) == null ? void 0 : _b.destroy();
       this.hls = null;
       if (this.video) {
         this.video.removeAttribute("src");
@@ -42975,6 +42997,22 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   };
   var MAX_DRIFT_S = 2;
   var EDGE_MARGIN_S = 0.4;
+  var AUDIO_RETRY_MS = 2500;
+  function stalledAtZero(video, ms) {
+    if (video.currentTime > 0) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const done = (stalled) => {
+        clearTimeout(timer);
+        video.removeEventListener("timeupdate", onTime);
+        resolve(stalled);
+      };
+      const onTime = () => {
+        if (video.currentTime > 0) done(false);
+      };
+      const timer = setTimeout(() => done(true), ms);
+      video.addEventListener("timeupdate", onTime);
+    });
+  }
   function chaseLiveEdge(video) {
     const ranges = video.buffered;
     if (ranges.length === 0) return;
@@ -42990,6 +43028,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.video = null;
       this.endedCb = null;
       this.bufferingCb = null;
+      /** Aborts this attempt's element listeners; see start(). */
+      this.listeners = null;
       /** True when playback only started because the element had to be muted. */
       this.mutedByPolicy = false;
     }
@@ -43000,18 +43040,19 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.bufferingCb = cb;
     }
     async start(_streamId, video) {
-      var _a;
       this.video = video;
       const url = this.signaling.deliveryUrl(this.deliveryPath);
+      this.listeners = new AbortController();
+      const { signal } = this.listeners;
       video.addEventListener("ended", () => {
-        var _a2;
-        return (_a2 = this.endedCb) == null ? void 0 : _a2.call(this);
-      });
+        var _a;
+        return (_a = this.endedCb) == null ? void 0 : _a.call(this);
+      }, { signal });
       video.addEventListener("waiting", () => {
-        var _a2;
-        return (_a2 = this.bufferingCb) == null ? void 0 : _a2.call(this);
-      });
-      video.addEventListener("timeupdate", () => chaseLiveEdge(video));
+        var _a;
+        return (_a = this.bufferingCb) == null ? void 0 : _a.call(this);
+      }, { signal });
+      video.addEventListener("timeupdate", () => chaseLiveEdge(video), { signal });
       let mod;
       try {
         mod = await Promise.resolve().then(() => __toESM(require_flv(), 1));
@@ -43022,7 +43063,23 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       if (!flvjs.isSupported()) {
         throw mebiusError("CONNECTION_FAILED", "Balanced playback is not supported in this browser.");
       }
-      const player = flvjs.createPlayer({ type: "flv", url, isLive: true }, LIVE_FLV_CONFIG);
+      this.attachPlayer(flvjs, video, url, true);
+      const firstPlay = playWithAutoplayFallback(video);
+      firstPlay.catch(() => void 0);
+      if (await stalledAtZero(video, AUDIO_RETRY_MS)) {
+        this.teardownPlayer();
+        this.attachPlayer(flvjs, video, url, false);
+        this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
+        return;
+      }
+      this.mutedByPolicy = (await firstPlay).mutedByPolicy;
+    }
+    attachPlayer(flvjs, video, url, withAudio) {
+      var _a;
+      const player = flvjs.createPlayer(
+        __spreadValues({ type: "flv", url, isLive: true }, withAudio ? {} : { hasAudio: false }),
+        LIVE_FLV_CONFIG
+      );
       this.player = player;
       player.on((_a = flvjs.Events.ERROR) != null ? _a : "error", () => {
         var _a2;
@@ -43030,15 +43087,19 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       });
       player.attachMediaElement(video);
       player.load();
-      this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
+    }
+    teardownPlayer() {
+      if (!this.player) return;
+      this.player.unload();
+      this.player.detachMediaElement();
+      this.player.destroy();
+      this.player = null;
     }
     async stop() {
-      if (this.player) {
-        this.player.unload();
-        this.player.detachMediaElement();
-        this.player.destroy();
-        this.player = null;
-      }
+      var _a;
+      (_a = this.listeners) == null ? void 0 : _a.abort();
+      this.listeners = null;
+      this.teardownPlayer();
       if (this.video) {
         this.video.removeAttribute("src");
         this.video.load();
@@ -43087,7 +43148,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
 
   // src/internal/telemetry.ts
-  var SDK_VERSION = "web/0.4.1";
+  var SDK_VERSION = "web/0.4.2";
   var FLUSH_INTERVAL_MS = 15e3;
   var MAX_BATCH = 64;
   function describeDevice() {
@@ -43147,7 +43208,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       if (beacon && typeof navigator !== "undefined" && navigator.sendBeacon) {
         const url = `${this.target.url}${this.target.url.includes("?") ? "&" : "?"}token=${encodeURIComponent(this.target.token)}`;
         try {
-          navigator.sendBeacon(url, new Blob([body], { type: "application/json" }));
+          navigator.sendBeacon(url, new Blob([body], { type: "text/plain" }));
         } catch (e) {
         }
         return;
