@@ -18,7 +18,7 @@
  */
 
 /** SDK identifier reported with each batch. Keep in step with package.json. */
-const SDK_VERSION = "react-native/0.4.2";
+const SDK_VERSION = "react-native/0.4.3";
 
 /** How often presence is reported. Also the resolution of the resulting watch time. */
 const HEARTBEAT_MS = 15_000;
