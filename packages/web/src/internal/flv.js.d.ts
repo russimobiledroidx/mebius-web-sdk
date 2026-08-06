@@ -23,7 +23,7 @@ declare module "flv.js" {
   interface FlvModule {
     isSupported(): boolean;
     createPlayer(
-      source: { type: string; url: string; isLive?: boolean },
+      source: { type: string; url: string; isLive?: boolean; hasAudio?: boolean; hasVideo?: boolean },
       config?: {
         enableStashBuffer?: boolean;
         stashInitialSize?: number;

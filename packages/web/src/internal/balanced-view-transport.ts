@@ -70,6 +70,30 @@ const MAX_DRIFT_S = 2;
 const EDGE_MARGIN_S = 0.4;
 
 /**
+ * How long the first attempt gets to produce a frame before the audio-less
+ * retry. Short on purpose: this path only exists for a stream that is already
+ * broken, and every millisecond here is join delay for the viewer.
+ */
+const AUDIO_RETRY_MS = 2500;
+
+/** Resolves true when the element has not started playing within `ms`. */
+function stalledAtZero(video: HTMLVideoElement, ms: number): Promise<boolean> {
+  if (video.currentTime > 0) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const done = (stalled: boolean) => {
+      clearTimeout(timer);
+      video.removeEventListener("timeupdate", onTime);
+      resolve(stalled);
+    };
+    const onTime = () => {
+      if (video.currentTime > 0) done(false);
+    };
+    const timer = setTimeout(() => done(true), ms);
+    video.addEventListener("timeupdate", onTime);
+  });
+}
+
+/**
  * Skip to the live edge when playback has fallen behind it. Exported for test;
  * a no-op when the gap is small, so it is safe on every `timeupdate`.
  */
@@ -86,6 +110,8 @@ export class FlvViewTransport implements ViewTransport {
   private video: HTMLVideoElement | null = null;
   private endedCb: (() => void) | null = null;
   private bufferingCb: (() => void) | null = null;
+  /** Aborts this attempt's element listeners; see start(). */
+  private listeners: AbortController | null = null;
 
   constructor(
     private readonly signaling: SignalingClient,
@@ -104,9 +130,16 @@ export class FlvViewTransport implements ViewTransport {
     this.video = video;
     const url = this.signaling.deliveryUrl(this.deliveryPath);
 
-    video.addEventListener("ended", () => this.endedCb?.());
-    video.addEventListener("waiting", () => this.bufferingCb?.());
-    video.addEventListener("timeupdate", () => chaseLiveEdge(video));
+    // Bound to this attempt's lifetime. The player hands every candidate route
+    // the SAME element, so listeners left behind by a route that failed keep
+    // firing over the route that succeeded — and an orphaned chaseLiveEdge does
+    // not just report, it SEEKS, yanking a healthy HLS playback around on behalf
+    // of a dead FLV attempt. stop() aborts them.
+    this.listeners = new AbortController();
+    const { signal } = this.listeners;
+    video.addEventListener("ended", () => this.endedCb?.(), { signal });
+    video.addEventListener("waiting", () => this.bufferingCb?.(), { signal });
+    video.addEventListener("timeupdate", () => chaseLiveEdge(video), { signal });
 
     let mod: FlvModule;
     try {
@@ -124,25 +157,65 @@ export class FlvViewTransport implements ViewTransport {
       throw mebiusError("CONNECTION_FAILED", "Balanced playback is not supported in this browser.");
     }
 
-    const player = flvjs.createPlayer({ type: "flv", url, isLive: true }, LIVE_FLV_CONFIG);
+    this.attachPlayer(flvjs, video, url, true);
+    // NOT awaited yet: video.play() only settles once playback actually begins,
+    // so awaiting it here would hang on exactly the stall the retry below exists
+    // to break. The outcome is collected after we know the stream moved.
+    const firstPlay = playWithAutoplayFallback(video);
+    firstPlay.catch(() => undefined); // the retry path is the error handler
+
+    // Second attempt, without the audio track, when the first one never moves.
+    //
+    // An FLV header can claim audio the stream does not carry — a WebRTC
+    // broadcast reaches the CDN as video-only (Opus cannot ride in FLV) and the
+    // header still advertises audio. flv.js then holds playback forever waiting
+    // for an audio init segment that never comes: metadata parses, the video
+    // init segment lands, and currentTime stays at 0.
+    //
+    // Telling flv.js up front to ignore audio would silence every publisher that
+    // DOES send AAC, so it cannot be the default — this only fires once, only
+    // when the stream has demonstrably not started, and it is far cheaper than
+    // the player's 8s route watchdog for a case that is otherwise unrecoverable.
+    if (await stalledAtZero(video, AUDIO_RETRY_MS)) {
+      this.teardownPlayer();
+      this.attachPlayer(flvjs, video, url, false);
+      this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
+      return;
+    }
+    this.mutedByPolicy = (await firstPlay).mutedByPolicy;
+  }
+
+  private attachPlayer(
+    flvjs: FlvModule["default"],
+    video: HTMLVideoElement,
+    url: string,
+    withAudio: boolean,
+  ): void {
+    const player = flvjs.createPlayer(
+      { type: "flv", url, isLive: true, ...(withAudio ? {} : { hasAudio: false }) },
+      LIVE_FLV_CONFIG,
+    );
     this.player = player;
     player.on(flvjs.Events.ERROR ?? "error", () => this.bufferingCb?.());
     player.attachMediaElement(video);
     player.load();
-    // flv.js delegates to the element, so the same autoplay policy applies.
-    this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
+  }
+
+  private teardownPlayer(): void {
+    if (!this.player) return;
+    this.player.unload();
+    this.player.detachMediaElement();
+    this.player.destroy();
+    this.player = null;
   }
 
   /** True when playback only started because the element had to be muted. */
   mutedByPolicy = false;
 
   async stop(): Promise<void> {
-    if (this.player) {
-      this.player.unload();
-      this.player.detachMediaElement();
-      this.player.destroy();
-      this.player = null;
-    }
+    this.listeners?.abort();
+    this.listeners = null;
+    this.teardownPlayer();
     if (this.video) {
       this.video.removeAttribute("src");
       this.video.load();

@@ -1,5 +1,14 @@
 # @mebius-io/react
 
+## 0.4.2
+
+### Patch Changes
+
+- Bumped to pick up @mebius-io/web 0.4.2, which makes a browser broadcast
+  watchable outside the real-time route and cuts join delay on the buffered
+  ones. The dependency is an exact pin, so 0.4.1 of this package would keep
+  resolving to the previous web build.
+
 ## 0.4.1
 
 ### Patch Changes
