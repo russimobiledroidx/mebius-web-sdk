@@ -13,7 +13,7 @@
  */
 
 /** SDK identifier reported with each batch. Keep in step with package.json. */
-const SDK_VERSION = "web/0.4.4";
+const SDK_VERSION = "web/0.4.5";
 
 /** How often a batch is sent. Long enough to batch, short enough to survive a tab close. */
 const FLUSH_INTERVAL_MS = 15_000;

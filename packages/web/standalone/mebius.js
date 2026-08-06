@@ -42998,7 +42998,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   var MAX_DRIFT_S = 2;
   var EDGE_MARGIN_S = 0.4;
   var AUDIO_RETRY_MS = 2500;
-  function stalledAtZero(video, ms) {
+  function stalledWithData(video, ms) {
     if (video.currentTime > 0) return Promise.resolve(false);
     return new Promise((resolve) => {
       const done = (stalled) => {
@@ -43009,7 +43009,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       const onTime = () => {
         if (video.currentTime > 0) done(false);
       };
-      const timer = setTimeout(() => done(true), ms);
+      const timer = setTimeout(() => done(video.buffered.length > 0 && video.currentTime === 0), ms);
       video.addEventListener("timeupdate", onTime);
     });
   }
@@ -43066,7 +43066,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.attachPlayer(flvjs, video, url, true);
       const firstPlay = playWithAutoplayFallback(video);
       firstPlay.catch(() => void 0);
-      if (await stalledAtZero(video, AUDIO_RETRY_MS)) {
+      if (await stalledWithData(video, AUDIO_RETRY_MS)) {
         this.teardownPlayer();
         this.attachPlayer(flvjs, video, url, false);
         this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
@@ -43148,7 +43148,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
 
   // src/internal/telemetry.ts
-  var SDK_VERSION = "web/0.4.4";
+  var SDK_VERSION = "web/0.4.5";
   var FLUSH_INTERVAL_MS = 15e3;
   var MAX_BATCH = 64;
   function describeDevice() {
@@ -43368,6 +43368,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
     /** Start playing `streamId` into the given video element or selector. */
     async play(streamId, viewTarget) {
+      var _a;
       if (this.playing) return;
       const video = resolveVideoElement(viewTarget);
       const previous = ELEMENT_OWNER.get(video);
@@ -43409,6 +43410,9 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         }
         await candidate.stop().catch(() => void 0);
       }
+      (_a = this.elementListeners) == null ? void 0 : _a.abort();
+      this.elementListeners = null;
+      if (ELEMENT_OWNER.get(video) === this) ELEMENT_OWNER.delete(video);
       this.video = null;
       throw lastError != null ? lastError : mebiusError("CONNECTION_FAILED", "No Mebius route could play this stream.");
     }

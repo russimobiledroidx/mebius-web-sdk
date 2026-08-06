@@ -1,5 +1,11 @@
 # @mebius-io/react-native
 
+## 0.4.5
+
+### Patch Changes
+
+- Version alignment with @mebius-io/web 0.4.5. No change to this package.
+
 ## 0.4.4
 
 ### Patch Changes
