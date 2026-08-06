@@ -22,6 +22,26 @@ const STATS_INTERVAL_MS = 2000;
 const FIRST_FRAME_TIMEOUT_MS = 8000;
 
 /**
+ * Which player currently drives a given element.
+ *
+ * A second player on the same element is an ordinary thing for an app to do —
+ * a "play" button pressed twice, a component remounting — and it used to
+ * orphan the first one. The new player resets the element, which detaches the
+ * old MediaSource and removes its SourceBuffers, but the old player is still
+ * running: its buffered-media library keeps polling buffers that no longer
+ * belong to anything and floods the console with
+ *
+ *   InvalidStateError: Failed to read the 'buffered' property from
+ *   'SourceBuffer': This SourceBuffer has been removed from the parent media
+ *   source.
+ *
+ * The element can only have one owner, so taking ownership retires the
+ * previous one. WeakMap because an element that goes out of scope must not be
+ * kept alive by this bookkeeping.
+ */
+const ELEMENT_OWNER = new WeakMap<HTMLVideoElement, MebiusPlayer>();
+
+/**
  * Plays a Mebius stream into a `<video>` element.
  *
  * Create one with {@link MebiusClient.createPlayer}, optionally choosing a
@@ -35,6 +55,10 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
   private statsTimer: ReturnType<typeof setInterval> | null = null;
   private playing = false;
   private reporter: QoeReporter | null = null;
+  /** True between a `buffering` event and the element actually resuming. */
+  private stalled = false;
+  /** Cancels element listeners bound for the lifetime of one play(). */
+  private elementListeners: AbortController | null = null;
 
   /** @internal */
   constructor(
@@ -52,7 +76,30 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
   async play(streamId: string, viewTarget: ViewTarget): Promise<void> {
     if (this.playing) return;
     const video = resolveVideoElement(viewTarget);
+    // One element, one player. Whatever was driving it is finished, and stopping
+    // it here is what keeps a second play() from leaving a live transport
+    // attached to a MediaSource this one is about to replace.
+    const previous = ELEMENT_OWNER.get(video);
+    if (previous && previous !== this) await previous.stop();
+    ELEMENT_OWNER.set(video, this);
     this.video = video;
+
+    // `buffering` had no counterpart: an app that showed a spinner on it had
+    // nothing to hide the spinner on, so a single mid-stream stall left the UI
+    // reading "buffering" over perfectly smooth video for the rest of the
+    // session. The element knows when it resumed; re-emitting `playing` there
+    // gives every consumer the other half of the pair without inventing an
+    // event they would have to know to handle.
+    this.elementListeners = new AbortController();
+    video.addEventListener(
+      "playing",
+      () => {
+        if (!this.stalled || !this.playing) return;
+        this.stalled = false;
+        this.emit("playing", { streamId });
+      },
+      { signal: this.elementListeners.signal },
+    );
 
     // Measured across route attempts, not from the accepted route: a viewer who
     // waited through a dead edge waited, and reporting only the winning route's
@@ -102,6 +149,12 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
 
   /** Stop playback and detach from the video element. */
   async stop(): Promise<void> {
+    this.elementListeners?.abort();
+    this.elementListeners = null;
+    if (this.video && ELEMENT_OWNER.get(this.video) === this) {
+      ELEMENT_OWNER.delete(this.video);
+    }
+    this.stalled = false;
     this.stopStats();
     await this.reporter?.stop();
     this.reporter = null;
@@ -132,6 +185,7 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     });
     transport.onBuffering(() => {
       if (this.transport !== transport) return;
+      this.stalled = true;
       this.emit("buffering", undefined);
     });
   }
