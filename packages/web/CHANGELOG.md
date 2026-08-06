@@ -1,5 +1,25 @@
 # @mebius-io/web
 
+## 0.4.6
+
+### Patch Changes
+
+- The playlist route no longer breaks on Chromium.
+
+  It chose native playback whenever
+  `video.canPlayType("application/vnd.apple.mpegurl")` returned anything truthy.
+  Chromium answers `"maybe"` — a legal answer meaning "ask me again with
+  codecs" — while being unable to play a playlist at all, so the route assigned
+  `video.src` and died with `NotSupportedError: Failed to load because no
+  supported source was found`, on the browser most viewers use. Since this is
+  the origin-served fallback, the failure only showed when the CDN routes were
+  unavailable, which is exactly when the fallback is meant to save the session.
+
+  Media Source is now tried first and native only when hls.js cannot drive the
+  browser — Safari and iOS, where native is the correct answer anyway. Asking
+  the library whether it supports this browser is a direct question with a
+  direct answer; `canPlayType` is neither.
+
 ## 0.4.5
 
 ### Patch Changes
