@@ -4,14 +4,26 @@ import { SessionReporter } from "./telemetry.js";
 const target = { url: "https://api.example/api/ingest/beacon", token: "beacon-jwt" };
 
 function fetchSpy(ok = true) {
-  const spy = vi.fn(async () => ({ ok, status: ok ? 200 : 500 }) as Response);
+  // Parameters are declared even though the body ignores them: without them
+  // TypeScript infers a zero-length tuple for mock.calls, and every assertion
+  // that reads the RequestInit argument fails to compile.
+  const spy = vi.fn(async (_input: unknown, _init?: RequestInit) =>
+    ({ ok, status: ok ? 200 : 500 }) as Response);
   vi.stubGlobal("fetch", spy as unknown as typeof fetch);
   return spy;
 }
 
+/** The RequestInit of one recorded call, or a failure naming what was missing. */
+function initOf(spy: ReturnType<typeof fetchSpy>, call = 0): RequestInit {
+  const args = spy.mock.calls[call];
+  if (!args) throw new Error(`fetch was not called ${call + 1} time(s)`);
+  const init = args[1];
+  if (!init) throw new Error(`fetch call ${call} carried no RequestInit`);
+  return init;
+}
+
 function bodyOf(spy: ReturnType<typeof fetchSpy>, call = 0): Record<string, unknown> {
-  const init = spy.mock.calls[call]?.[1] as RequestInit | undefined;
-  return JSON.parse(String(init?.body ?? "{}"));
+  return JSON.parse(String(initOf(spy, call).body ?? "{}"));
 }
 
 beforeEach(() => vi.useFakeTimers());
@@ -39,7 +51,7 @@ describe("SessionReporter", () => {
     const r = new SessionReporter(target, "pub", "s1", "u9");
     r.start();
     await r.stop();
-    const headers = (spy.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+    const headers = initOf(spy).headers as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer beacon-jwt");
     const body = bodyOf(spy);
     expect(body.userId).toBe("u9");
