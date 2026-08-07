@@ -20,8 +20,20 @@ export interface PublishTransport {
   replaceVideoTrack(track: MediaStreamTrack | null): Promise<void>;
 }
 
+/**
+ * Wire name of a playback transport, reported with telemetry.
+ *
+ * The dashboard has a "player" column and nothing ever filled it — the SDK sent
+ * no such field, so the backend defaulted every viewer session to `flv_js`
+ * whatever had actually played it. The route chosen is exactly the sort of
+ * thing that explains a bad session, so it is worth one string per batch.
+ */
+export type ViewTransportKind = "whep" | "flv_js" | "hls";
+
 /** Hidden transport that renders a remote stream into a video element. */
 export interface ViewTransport {
+  /** Which mechanism this is, for telemetry. Never shown to the viewer. */
+  readonly kind: ViewTransportKind;
   start(streamId: string, video: HTMLVideoElement): Promise<void>;
   stop(): Promise<void>;
   getStats(): Promise<PlaybackStats | null>;

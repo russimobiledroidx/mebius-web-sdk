@@ -5,6 +5,7 @@ import type { SignalingClient } from "./internal/signaling.js";
 import { createViewCandidates, type ViewTransport } from "./internal/transport.js";
 import { QoeReporter, type TelemetryTarget } from "./internal/telemetry.js";
 import { resetVideoElement } from "./internal/autoplay.js";
+import { FreezeClock } from "./internal/freeze-clock.js";
 import type { MebiusDelivery, PlayerOptions, ViewTarget } from "./types.js";
 
 const STATS_INTERVAL_MS = 2000;
@@ -57,6 +58,8 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
   private reporter: QoeReporter | null = null;
   /** True between a `buffering` event and the element actually resuming. */
   private stalled = false;
+  /** Measures how long playback was actually frozen; see FreezeClock. */
+  private readonly freeze = new FreezeClock();
   /** Cancels element listeners bound for the lifetime of one play(). */
   private elementListeners: AbortController | null = null;
 
@@ -96,6 +99,7 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
       () => {
         if (!this.stalled || !this.playing) return;
         this.stalled = false;
+        this.freeze.endStall();
         this.emit("playing", { streamId });
       },
       { signal: this.elementListeners.signal },
@@ -122,7 +126,13 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
           this.transport = candidate;
           this.playing = true;
           if (this.telemetry) {
-            this.reporter = new QoeReporter(this.telemetry, "play", streamId, this.userId);
+            this.reporter = new QoeReporter(
+              this.telemetry,
+              "play",
+              streamId,
+              this.userId,
+              candidate.kind,
+            );
             this.reporter.start();
             // One sample at join time carries the join delay. Viewer minutes are
             // derived from the span between a session's first and last sample, so
@@ -162,6 +172,7 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
       ELEMENT_OWNER.delete(this.video);
     }
     this.stalled = false;
+    this.freeze.reset();
     this.stopStats();
     await this.reporter?.stop();
     this.reporter = null;
@@ -207,6 +218,10 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     });
     transport.onBuffering(() => {
       if (this.transport !== transport) return;
+      // Re-entering `buffering` while already stalled must not restart the
+      // clock: flv.js fires `waiting` repeatedly through one long stall, and
+      // resetting the start each time would report a fraction of the freeze.
+      this.freeze.beginStall();
       this.stalled = true;
       this.emit("buffering", undefined);
     });
@@ -215,12 +230,20 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
   private startStats(): void {
     this.statsTimer = setInterval(async () => {
       const stats = await this.transport?.getStats();
-      if (!stats) return;
+      // Freeze time is reported even when the transport has no stats to give:
+      // a route too stalled to produce statistics is precisely the one whose
+      // freezes matter most.
+      const freezeMs = this.freeze.take();
+      if (!stats) {
+        if (freezeMs > 0) this.reporter?.add({ ts: Math.floor(Date.now() / 1000), freezeMs });
+        return;
+      }
       this.emit("stats", stats);
       this.reporter?.add({
         ts: Math.floor(Date.now() / 1000),
         bitrateKbps: stats.bitrateKbps,
         fps: stats.framesPerSecond,
+        freezeMs,
       });
     }, STATS_INTERVAL_MS);
   }

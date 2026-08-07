@@ -12,6 +12,8 @@ import { DEFAULT_RTC_CONFIG, waitForIceGathering } from "./webrtc-util.js";
 import { playWithAutoplayFallback, resetVideoElement } from "./autoplay.js";
 
 export class WhepViewTransport implements ViewTransport {
+  readonly kind = "whep" as const;
+
   private pc: RTCPeerConnection | null = null;
   private resourceUrl: string | null = null;
   private endedCb: (() => void) | null = null;

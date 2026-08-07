@@ -38,32 +38,22 @@ jobs:
       - name: Abstraction guard
         run: pnpm check:abstraction
 
-  publish:
-    # Publishes to npm via changesets. Runs on main; the publish step is skipped
-    # unless the NPM_TOKEN secret is configured, so CI stays green until then.
-    # To enable publishing: add repo secret NPM_TOKEN (an npm automation token
-    # with publish rights to the @mebius scope).
-    needs: build
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.15.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: pnpm
-          registry-url: https://registry.npmjs.org
-      - run: pnpm install --frozen-lockfile
-      - name: Publish to npm (changesets)
-        if: ${{ env.NPM_TOKEN != '' }}
-        run: pnpm release
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - name: Publish skipped (no NPM_TOKEN secret)
-        if: ${{ env.NPM_TOKEN == '' }}
-        run: echo "NPM_TOKEN secret is not set — skipping npm publish. Add it in repo Settings → Secrets to enable."
+# The publish job was removed deliberately.
+#
+# It rebuilt the whole workspace on every push to main purely to decide, most
+# of the time, that there was nothing to release — a full runner spun up per
+# push for a `changeset publish` no-op. Releases here are infrequent and
+# deliberate, so the CI minutes bought nothing that a person running one
+# command at release time does not already do.
+#
+# To release: from main, with the version bumped and the build green,
+#
+#   pnpm install --frozen-lockfile
+#   pnpm build
+#   npm publish --workspace packages/<name> --access public
+#
+# (or `pnpm release` to go through changesets). Publishing needs an npm account
+# with write access to the @mebius-io scope; `npm whoami` before you start.
+#
+# The `build` job above still runs on every push and PR, so nothing about the
+# quality gate changed — only the unused release runner is gone.

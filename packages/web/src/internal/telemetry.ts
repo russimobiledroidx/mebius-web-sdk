@@ -12,8 +12,14 @@
  * project, so it can only ever write its own telemetry.
  */
 
-/** SDK identifier reported with each batch. Keep in step with package.json. */
-const SDK_VERSION = "web/0.4.6";
+/**
+ * SDK identifier reported with each batch.
+ *
+ * MUST match package.json. It had drifted (0.4.6 while the package shipped
+ * 0.4.7), so the dashboard attributed every session to a version that was not
+ * the one running — the first thing you check when a release regresses.
+ */
+const SDK_VERSION = "web/0.4.8";
 
 /** How often a batch is sent. Long enough to batch, short enough to survive a tab close. */
 const FLUSH_INTERVAL_MS = 15_000;
@@ -81,6 +87,13 @@ export class QoeReporter {
     private readonly role: "pub" | "play",
     private readonly streamId: string,
     private readonly userId?: string,
+    /**
+     * Which transport is playing. Reported so the dashboard's player column
+     * reflects the route actually serving the viewer — the field was never
+     * sent before, and the server filled the gap by assuming flv.js for
+     * everyone.
+     */
+    private readonly playerKind?: string,
   ) {}
 
   start(): void {
@@ -119,6 +132,7 @@ export class QoeReporter {
       streamId: this.streamId,
       role: this.role,
       userId: this.userId,
+      playerKind: this.playerKind,
       samples,
       device: describeDevice(),
       network: describeNetwork(),
