@@ -115,6 +115,8 @@ export function chaseLiveEdge(video: HTMLVideoElement): void {
 }
 
 export class FlvViewTransport implements ViewTransport {
+  readonly kind = "flv_js" as const;
+
   private player: FlvPlayer | null = null;
   private video: HTMLVideoElement | null = null;
   private endedCb: (() => void) | null = null;
@@ -232,12 +234,38 @@ export class FlvViewTransport implements ViewTransport {
     this.video = null;
   }
 
+  /** Decoded-frame count and timestamp of the previous getStats() call. */
+  private lastFrames: { count: number; atMs: number } | null = null;
+
+  /**
+   * Real playback statistics for this route.
+   *
+   * Both numbers used to be hardcoded zeros, which is worse than reporting
+   * nothing: the dashboard cannot tell a measured 0 kbps from an unmeasured
+   * one, so every flv.js viewer in production showed a downlink of 0 and the
+   * column read as a total outage. flv.js measures throughput itself
+   * (`statisticsInfo.speed`, KB/s), and the element counts decoded frames, so
+   * frame rate is the delta between two calls. Anything genuinely unavailable
+   * is left undefined rather than zeroed.
+   */
   async getStats(): Promise<PlaybackStats | null> {
     if (!this.video) return null;
-    return {
-      bitrateKbps: 0,
-      framesPerSecond: 0,
-      latencyMs: undefined,
-    };
+
+    const speedKBs = this.player?.statisticsInfo?.speed;
+    const bitrateKbps = typeof speedKBs === "number" ? Math.round(speedKBs * 8) : undefined;
+
+    let framesPerSecond: number | undefined;
+    const q = this.video.getVideoPlaybackQuality?.();
+    const count = q?.totalVideoFrames;
+    const atMs = Date.now();
+    if (typeof count === "number") {
+      const prev = this.lastFrames;
+      if (prev && atMs > prev.atMs && count >= prev.count) {
+        framesPerSecond = Math.round(((count - prev.count) * 1000) / (atMs - prev.atMs));
+      }
+      this.lastFrames = { count, atMs };
+    }
+
+    return { bitrateKbps, framesPerSecond, latencyMs: undefined };
   }
 }

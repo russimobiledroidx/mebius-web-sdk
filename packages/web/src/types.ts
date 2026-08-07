@@ -104,22 +104,37 @@ export interface PlayerOptions {
  */
 export type ViewTarget = HTMLVideoElement | string;
 
-/** Live broadcast statistics, emitted periodically on the `"stats"` event. */
+/**
+ * Live broadcast statistics, emitted periodically on the `"stats"` event.
+ *
+ * Every field is optional: the first tick of a session has no previous sample
+ * to difference against, and a value that was never measured must stay absent
+ * rather than be reported as a confident zero.
+ */
 export interface BroadcastStats {
-  /** Outbound bitrate in kilobits per second. */
-  bitrateKbps: number;
+  /** Outbound bitrate in kilobits per second — what is actually being sent. */
+  bitrateKbps?: number;
   /** Frames per second currently being sent. */
-  framesPerSecond: number;
+  framesPerSecond?: number;
   /** Round-trip time to the gateway in milliseconds, if known. */
   rttMs?: number;
+  /** Percentage of sent packets the receiver reported missing, if known. */
+  packetLossPct?: number;
 }
 
-/** Live playback statistics, emitted periodically on the `"stats"` event. */
+/**
+ * Live playback statistics, emitted periodically on the `"stats"` event.
+ *
+ * Fields are optional because not every route can measure every one, and a
+ * transport that reports 0 for something it never measured is indistinguishable
+ * from a stream that is genuinely delivering nothing — which is exactly how
+ * "0 kbps downlink" ended up on every viewer in the dashboard.
+ */
 export interface PlaybackStats {
-  /** Inbound bitrate in kilobits per second. */
-  bitrateKbps: number;
-  /** Frames per second currently being rendered. */
-  framesPerSecond: number;
+  /** Inbound bitrate in kilobits per second, when the route can measure it. */
+  bitrateKbps?: number;
+  /** Frames per second currently being rendered, when known. */
+  framesPerSecond?: number;
   /** Estimated end-to-end latency in milliseconds, if known. */
   latencyMs?: number;
 }

@@ -16,6 +16,8 @@ type HlsModule = typeof import("hls.js");
 type HlsInstance = import("hls.js").default;
 
 export class HlsViewTransport implements ViewTransport {
+  readonly kind = "hls" as const;
+
   private hls: HlsInstance | null = null;
   private video: HTMLVideoElement | null = null;
   private endedCb: (() => void) | null = null;

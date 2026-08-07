@@ -42727,6 +42727,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.signaling = signaling;
       this.pc = null;
       this.resourceUrl = null;
+      /** Bytes sent and packet counters at the previous getStats() call. */
+      this.lastOutbound = null;
     }
     async start(streamId, stream) {
       var _a;
@@ -42768,26 +42770,61 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       (_b = this.pc) == null ? void 0 : _b.close();
       this.pc = null;
     }
+    /**
+     * Live broadcast statistics.
+     *
+     * Two corrections over the obvious reading of RTCStats:
+     *
+     * `bitrateKbps` is the delta of `outbound-rtp.bytesSent`, not
+     * `availableOutgoingBitrate`. The latter is the congestion controller's
+     * ESTIMATE of headroom, so a broadcaster on a fast link reported several
+     * megabits while actually sending a fraction of that — the dashboard's
+     * "bitrate adherence" score was measuring the network, not the encoder.
+     *
+     * `packetLossPct` comes from the receiver's report (`remote-inbound-rtp`),
+     * which is the only place that knows what did not arrive. It was never
+     * reported at all, and publishQualityScore treats a missing value as zero
+     * loss — so every publisher scored full marks on a fifth of the rubric no
+     * matter how bad the uplink was.
+     */
     async getStats() {
       if (!this.pc) return null;
       const report = await this.pc.getStats();
-      let bitrateKbps = 0;
-      let framesPerSecond = 0;
+      let framesPerSecond;
       let rttMs;
+      let packetLossPct;
+      let bytesSent;
+      let packetsSent;
+      let packetsLost;
       report.forEach((stat) => {
         if (stat.type === "outbound-rtp" && !stat.isRemote) {
           if (typeof stat.framesPerSecond === "number") framesPerSecond = stat.framesPerSecond;
+          if (typeof stat.bytesSent === "number") bytesSent = (bytesSent != null ? bytesSent : 0) + stat.bytesSent;
+          if (typeof stat.packetsSent === "number") packetsSent = (packetsSent != null ? packetsSent : 0) + stat.packetsSent;
+        }
+        if (stat.type === "remote-inbound-rtp") {
+          if (typeof stat.packetsLost === "number") packetsLost = (packetsLost != null ? packetsLost : 0) + stat.packetsLost;
+          if (typeof stat.roundTripTime === "number") rttMs = Math.round(stat.roundTripTime * 1e3);
         }
         if (stat.type === "candidate-pair" && stat.state === "succeeded") {
-          if (typeof stat.availableOutgoingBitrate === "number") {
-            bitrateKbps = Math.round(stat.availableOutgoingBitrate / 1e3);
-          }
-          if (typeof stat.currentRoundTripTime === "number") {
+          if (rttMs == null && typeof stat.currentRoundTripTime === "number") {
             rttMs = Math.round(stat.currentRoundTripTime * 1e3);
           }
         }
       });
-      return { bitrateKbps, framesPerSecond, rttMs };
+      let bitrateKbps;
+      const atMs = Date.now();
+      if (bytesSent != null) {
+        const prev = this.lastOutbound;
+        if (prev && atMs > prev.atMs && bytesSent >= prev.bytes) {
+          bitrateKbps = Math.round((bytesSent - prev.bytes) * 8 / 1e3 / ((atMs - prev.atMs) / 1e3));
+        }
+        this.lastOutbound = { bytes: bytesSent, atMs };
+      }
+      if (packetsLost != null && packetsSent != null && packetsSent > 0) {
+        packetLossPct = Math.max(0, Math.min(100, packetsLost / packetsSent * 100));
+      }
+      return { bitrateKbps, framesPerSecond, rttMs, packetLossPct };
     }
   };
 
@@ -42817,6 +42854,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   var WhepViewTransport = class {
     constructor(signaling) {
       this.signaling = signaling;
+      this.kind = "whep";
       this.pc = null;
       this.resourceUrl = null;
       this.endedCb = null;
@@ -42909,6 +42947,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     constructor(signaling, deliveryPath) {
       this.signaling = signaling;
       this.deliveryPath = deliveryPath;
+      this.kind = "hls";
       this.hls = null;
       this.video = null;
       this.endedCb = null;
@@ -43023,6 +43062,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     constructor(signaling, deliveryPath) {
       this.signaling = signaling;
       this.deliveryPath = deliveryPath;
+      this.kind = "flv_js";
       this.player = null;
       this.video = null;
       this.endedCb = null;
@@ -43031,6 +43071,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.listeners = null;
       /** True when playback only started because the element had to be muted. */
       this.mutedByPolicy = false;
+      /** Decoded-frame count and timestamp of the previous getStats() call. */
+      this.lastFrames = null;
     }
     onEnded(cb) {
       this.endedCb = cb;
@@ -43105,13 +43147,34 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       }
       this.video = null;
     }
+    /**
+     * Real playback statistics for this route.
+     *
+     * Both numbers used to be hardcoded zeros, which is worse than reporting
+     * nothing: the dashboard cannot tell a measured 0 kbps from an unmeasured
+     * one, so every flv.js viewer in production showed a downlink of 0 and the
+     * column read as a total outage. flv.js measures throughput itself
+     * (`statisticsInfo.speed`, KB/s), and the element counts decoded frames, so
+     * frame rate is the delta between two calls. Anything genuinely unavailable
+     * is left undefined rather than zeroed.
+     */
     async getStats() {
+      var _a, _b, _c, _d;
       if (!this.video) return null;
-      return {
-        bitrateKbps: 0,
-        framesPerSecond: 0,
-        latencyMs: void 0
-      };
+      const speedKBs = (_b = (_a = this.player) == null ? void 0 : _a.statisticsInfo) == null ? void 0 : _b.speed;
+      const bitrateKbps = typeof speedKBs === "number" ? Math.round(speedKBs * 8) : void 0;
+      let framesPerSecond;
+      const q = (_d = (_c = this.video).getVideoPlaybackQuality) == null ? void 0 : _d.call(_c);
+      const count = q == null ? void 0 : q.totalVideoFrames;
+      const atMs = Date.now();
+      if (typeof count === "number") {
+        const prev = this.lastFrames;
+        if (prev && atMs > prev.atMs && count >= prev.count) {
+          framesPerSecond = Math.round((count - prev.count) * 1e3 / (atMs - prev.atMs));
+        }
+        this.lastFrames = { count, atMs };
+      }
+      return { bitrateKbps, framesPerSecond, latencyMs: void 0 };
     }
   };
 
@@ -43147,7 +43210,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
 
   // src/internal/telemetry.ts
-  var SDK_VERSION = "web/0.4.6";
+  var SDK_VERSION = "web/0.4.8";
   var FLUSH_INTERVAL_MS = 15e3;
   var MAX_BATCH = 64;
   function describeDevice() {
@@ -43160,11 +43223,12 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     return (conn == null ? void 0 : conn.effectiveType) ? { type: conn.effectiveType } : void 0;
   }
   var QoeReporter = class {
-    constructor(target, role, streamId, userId) {
+    constructor(target, role, streamId, userId, playerKind) {
       this.target = target;
       this.role = role;
       this.streamId = streamId;
       this.userId = userId;
+      this.playerKind = playerKind;
       this.sessionId = randomId();
       this.buffer = [];
       this.timer = null;
@@ -43200,6 +43264,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         streamId: this.streamId,
         role: this.role,
         userId: this.userId,
+        playerKind: this.playerKind,
         samples,
         device: describeDevice(),
         network: describeNetwork()
@@ -43329,7 +43394,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
           ts: Math.floor(Date.now() / 1e3),
           bitrateKbps: stats.bitrateKbps,
           fps: stats.framesPerSecond,
-          rttMs: stats.rttMs
+          rttMs: stats.rttMs,
+          packetLossPct: stats.packetLossPct
         });
       }, STATS_INTERVAL_MS);
     }
@@ -43342,6 +43408,59 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     if (c === void 0) return fallback;
     return c;
   }
+
+  // src/internal/freeze-clock.ts
+  var FreezeClock = class {
+    constructor(now2 = Date.now) {
+      this.now = now2;
+      /** When the current stall began, or null when playback is running. */
+      this.stalledSinceMs = null;
+      /** Stall time that has ended but has not yet been shipped with a sample. */
+      this.pendingMs = 0;
+    }
+    /** True while a stall is in progress. */
+    get stalled() {
+      return this.stalledSinceMs !== null;
+    }
+    /**
+     * Begin a stall. Re-entering while already stalled is ignored rather than
+     * restarting the clock: flv.js fires `waiting` repeatedly through a single
+     * long stall, and resetting the start on each would report a fraction of the
+     * freeze that actually happened.
+     */
+    beginStall() {
+      if (this.stalledSinceMs === null) this.stalledSinceMs = this.now();
+    }
+    /** End the current stall and bank its duration. No-op when not stalled. */
+    endStall() {
+      if (this.stalledSinceMs === null) return;
+      this.pendingMs += Math.max(0, this.now() - this.stalledSinceMs);
+      this.stalledSinceMs = null;
+    }
+    /**
+     * Freeze milliseconds to report on this tick, resetting the counter.
+     *
+     * A stall still in progress is counted up to now and its clock restarted, so
+     * a freeze longer than the sample interval is reported while it is happening
+     * rather than landing whole in whichever sample eventually follows it. Every
+     * millisecond is attributed exactly once — never dropped, never double-counted.
+     */
+    take() {
+      if (this.stalledSinceMs !== null) {
+        const now2 = this.now();
+        this.pendingMs += Math.max(0, now2 - this.stalledSinceMs);
+        this.stalledSinceMs = now2;
+      }
+      const ms = this.pendingMs;
+      this.pendingMs = 0;
+      return ms;
+    }
+    /** Forget everything. Called when a session ends. */
+    reset() {
+      this.stalledSinceMs = null;
+      this.pendingMs = 0;
+    }
+  };
 
   // src/player.ts
   var STATS_INTERVAL_MS2 = 2e3;
@@ -43361,6 +43480,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.reporter = null;
       /** True between a `buffering` event and the element actually resuming. */
       this.stalled = false;
+      /** Measures how long playback was actually frozen; see FreezeClock. */
+      this.freeze = new FreezeClock();
       /** Cancels element listeners bound for the lifetime of one play(). */
       this.elementListeners = null;
       this.candidates = createViewCandidates((_a = options.mode) != null ? _a : "auto", signaling, deliveries);
@@ -43380,6 +43501,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         () => {
           if (!this.stalled || !this.playing) return;
           this.stalled = false;
+          this.freeze.endStall();
           this.emit("playing", { streamId });
         },
         { signal: this.elementListeners.signal }
@@ -43395,7 +43517,13 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
             this.transport = candidate;
             this.playing = true;
             if (this.telemetry) {
-              this.reporter = new QoeReporter(this.telemetry, "play", streamId, this.userId);
+              this.reporter = new QoeReporter(
+                this.telemetry,
+                "play",
+                streamId,
+                this.userId,
+                candidate.kind
+              );
               this.reporter.start();
               this.reporter.add({ ts: Math.floor(Date.now() / 1e3), firstFrameMs: Date.now() - startedAtMs });
             }
@@ -43424,6 +43552,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         ELEMENT_OWNER.delete(this.video);
       }
       this.stalled = false;
+      this.freeze.reset();
       this.stopStats();
       await ((_b = this.reporter) == null ? void 0 : _b.stop());
       this.reporter = null;
@@ -43464,20 +43593,26 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       });
       transport.onBuffering(() => {
         if (this.transport !== transport) return;
+        this.freeze.beginStall();
         this.stalled = true;
         this.emit("buffering", void 0);
       });
     }
     startStats() {
       this.statsTimer = setInterval(async () => {
-        var _a, _b;
+        var _a, _b, _c;
         const stats = await ((_a = this.transport) == null ? void 0 : _a.getStats());
-        if (!stats) return;
+        const freezeMs = this.freeze.take();
+        if (!stats) {
+          if (freezeMs > 0) (_b = this.reporter) == null ? void 0 : _b.add({ ts: Math.floor(Date.now() / 1e3), freezeMs });
+          return;
+        }
         this.emit("stats", stats);
-        (_b = this.reporter) == null ? void 0 : _b.add({
+        (_c = this.reporter) == null ? void 0 : _c.add({
           ts: Math.floor(Date.now() / 1e3),
           bitrateKbps: stats.bitrateKbps,
-          fps: stats.framesPerSecond
+          fps: stats.framesPerSecond,
+          freezeMs
         });
       }, STATS_INTERVAL_MS2);
     }
