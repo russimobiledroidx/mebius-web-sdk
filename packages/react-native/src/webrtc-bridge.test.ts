@@ -20,10 +20,11 @@ function peer(setCodecPreferences = vi.fn(), kind = "video"): RNPeerConnection {
 
 describe("preferH264", () => {
   it("puts H264 first so the server can mux the stream for non-WebRTC viewers", () => {
-    const set = vi.fn();
+    const set = vi.fn<(codecs: { mimeType: string }[]) => void>();
     preferH264(host(), peer(set));
     expect(set).toHaveBeenCalledTimes(1);
-    expect(set.mock.calls[0][0].map((c: { mimeType: string }) => c.mimeType)).toEqual([
+    const [codecs] = set.mock.calls[0] ?? [];
+    expect(codecs?.map((c) => c.mimeType)).toEqual([
       "video/H264",
       "video/VP8",
       "video/AV1",
@@ -31,13 +32,13 @@ describe("preferH264", () => {
   });
 
   it("leaves the audio transceiver alone", () => {
-    const set = vi.fn();
+    const set = vi.fn<(codecs: { mimeType: string }[]) => void>();
     preferH264(host(), peer(set, "audio"));
     expect(set).not.toHaveBeenCalled();
   });
 
   it("does nothing when the host cannot encode H264", () => {
-    const set = vi.fn();
+    const set = vi.fn<(codecs: { mimeType: string }[]) => void>();
     preferH264(host([{ mimeType: "video/VP8" }]), peer(set));
     expect(set).not.toHaveBeenCalled();
   });
