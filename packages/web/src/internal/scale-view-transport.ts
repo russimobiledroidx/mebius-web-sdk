@@ -86,10 +86,21 @@ export class HlsViewTransport implements ViewTransport {
     // No forced lowLatencyMode: it is for LL-HLS playlists (EXT-X-PART), and
     // asserting it against an ordinary playlist makes hls.js wait for parts that
     // never arrive. hls.js turns it on by itself when the playlist advertises it.
-    // maxLiveSyncPlaybackRate lets hls.js catch up by playing slightly fast when
-    // it has drifted behind the live edge. Default is 1 — no catching up ever, so
-    // every stall becomes permanent added latency for the rest of the session.
-    const hls = new Hls({ maxLiveSyncPlaybackRate: 1.5 });
+    //
+    // maxLiveSyncPlaybackRate lets hls.js catch up by playing fast when it has
+    // drifted behind the live edge. Default is 1 — no catching up ever, so every
+    // stall becomes permanent added latency for the rest of the session.
+    //
+    // 1.1, not 1.5. Catch-up is a pitch shift on the audio, and 1.5 is a 50%
+    // one: viewers hear it as chipmunk speech, which is worse than the latency it
+    // buys back. It also fights itself on an LL-HLS playlist, where the target is
+    // PART-HOLD-BACK (0.5s here) — any network jitter reads as "behind", so the
+    // player spends the session alternating between sprinting and starving.
+    // 1.1 is inaudible and still recovers a 2s drift in ~20s.
+    // Everything else is left at hls.js defaults on purpose: it already reads the
+    // server's own HOLD-BACK / PART-HOLD-BACK target from the playlist, and a
+    // number guessed here would only override a value the server measured.
+    const hls = new Hls({ maxLiveSyncPlaybackRate: 1.1 });
     this.hls = hls;
     hls.on(Hls.Events.ERROR, (_evt, data) => {
       if (data.fatal) this.bufferingCb?.();

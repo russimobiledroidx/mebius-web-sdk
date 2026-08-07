@@ -42951,7 +42951,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
         return;
       }
-      const hls = new Hls2({ maxLiveSyncPlaybackRate: 1.5 });
+      const hls = new Hls2({ maxLiveSyncPlaybackRate: 1.1 });
       this.hls = hls;
       hls.on(Hls2.Events.ERROR, (_evt, data) => {
         var _a;
