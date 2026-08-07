@@ -1,5 +1,24 @@
 # @mebius-io/web
 
+## 0.4.7
+
+### Patch Changes
+
+- Live catch-up no longer speeds the audio up audibly.
+
+  The playlist route asked hls.js to catch up to the live edge at up to 1.5x.
+  Catch-up is a pitch shift, and 50% of one is chipmunk speech — viewers heard
+  it long before they would have noticed the second of latency it buys back.
+
+  It also fought itself on a low-latency playlist. There the sync target is
+  `PART-HOLD-BACK`, often half a second, so ordinary network jitter reads as
+  "behind" and the player alternates between sprinting and starving: fast audio,
+  then a stall, then fast audio again.
+
+  Now 1.1, which is inaudible and still recovers a two-second drift in about
+  twenty. Every other tuning stays at the hls.js default, which already follows
+  the server's own HOLD-BACK / PART-HOLD-BACK rather than a number guessed here.
+
 ## 0.4.6
 
 ### Patch Changes
