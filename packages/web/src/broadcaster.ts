@@ -124,6 +124,7 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
         bitrateKbps: stats.bitrateKbps,
         fps: stats.framesPerSecond,
         rttMs: stats.rttMs,
+        packetLossPct: stats.packetLossPct,
       });
     }, STATS_INTERVAL_MS);
   }

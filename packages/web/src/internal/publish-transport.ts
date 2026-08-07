@@ -88,25 +88,70 @@ export class WhipPublishTransport implements PublishTransport {
     this.pc = null;
   }
 
+  /** Bytes sent and packet counters at the previous getStats() call. */
+  private lastOutbound: { bytes: number; atMs: number } | null = null;
+
+  /**
+   * Live broadcast statistics.
+   *
+   * Two corrections over the obvious reading of RTCStats:
+   *
+   * `bitrateKbps` is the delta of `outbound-rtp.bytesSent`, not
+   * `availableOutgoingBitrate`. The latter is the congestion controller's
+   * ESTIMATE of headroom, so a broadcaster on a fast link reported several
+   * megabits while actually sending a fraction of that — the dashboard's
+   * "bitrate adherence" score was measuring the network, not the encoder.
+   *
+   * `packetLossPct` comes from the receiver's report (`remote-inbound-rtp`),
+   * which is the only place that knows what did not arrive. It was never
+   * reported at all, and publishQualityScore treats a missing value as zero
+   * loss — so every publisher scored full marks on a fifth of the rubric no
+   * matter how bad the uplink was.
+   */
   async getStats(): Promise<BroadcastStats | null> {
     if (!this.pc) return null;
     const report = await this.pc.getStats();
-    let bitrateKbps = 0;
-    let framesPerSecond = 0;
+
+    let framesPerSecond: number | undefined;
     let rttMs: number | undefined;
+    let packetLossPct: number | undefined;
+    let bytesSent: number | undefined;
+    let packetsSent: number | undefined;
+    let packetsLost: number | undefined;
+
     report.forEach((stat) => {
       if (stat.type === "outbound-rtp" && !stat.isRemote) {
         if (typeof stat.framesPerSecond === "number") framesPerSecond = stat.framesPerSecond;
+        if (typeof stat.bytesSent === "number") bytesSent = (bytesSent ?? 0) + stat.bytesSent;
+        if (typeof stat.packetsSent === "number") packetsSent = (packetsSent ?? 0) + stat.packetsSent;
+      }
+      if (stat.type === "remote-inbound-rtp") {
+        if (typeof stat.packetsLost === "number") packetsLost = (packetsLost ?? 0) + stat.packetsLost;
+        // The receiver's RTT is more accurate than the candidate pair's when
+        // both are present, so it wins; the candidate pair fills in below.
+        if (typeof stat.roundTripTime === "number") rttMs = Math.round(stat.roundTripTime * 1000);
       }
       if (stat.type === "candidate-pair" && stat.state === "succeeded") {
-        if (typeof stat.availableOutgoingBitrate === "number") {
-          bitrateKbps = Math.round(stat.availableOutgoingBitrate / 1000);
-        }
-        if (typeof stat.currentRoundTripTime === "number") {
+        if (rttMs == null && typeof stat.currentRoundTripTime === "number") {
           rttMs = Math.round(stat.currentRoundTripTime * 1000);
         }
       }
     });
-    return { bitrateKbps, framesPerSecond, rttMs };
+
+    let bitrateKbps: number | undefined;
+    const atMs = Date.now();
+    if (bytesSent != null) {
+      const prev = this.lastOutbound;
+      if (prev && atMs > prev.atMs && bytesSent >= prev.bytes) {
+        bitrateKbps = Math.round(((bytesSent - prev.bytes) * 8) / 1000 / ((atMs - prev.atMs) / 1000));
+      }
+      this.lastOutbound = { bytes: bytesSent, atMs };
+    }
+
+    if (packetsLost != null && packetsSent != null && packetsSent > 0) {
+      packetLossPct = Math.max(0, Math.min(100, (packetsLost / packetsSent) * 100));
+    }
+
+    return { bitrateKbps, framesPerSecond, rttMs, packetLossPct };
   }
 }

@@ -19,6 +19,12 @@ declare module "flv.js" {
     detachMediaElement(): void;
     destroy(): void;
     on(event: string, cb: (...args: unknown[]) => void): void;
+    /**
+     * Live download statistics. `speed` is the measured network throughput in
+     * KB/s — the only downlink figure this route can produce, since MSE
+     * playback has no RTCStats to read. Absent until the first segment lands.
+     */
+    readonly statisticsInfo?: { speed?: number; decodedFrames?: number };
   }
   interface FlvModule {
     isSupported(): boolean;
