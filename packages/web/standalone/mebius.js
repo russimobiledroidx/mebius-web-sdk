@@ -42937,6 +42937,10 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   };
 
   // src/internal/scale-view-transport.ts
+  function retryWarmupNotFound(cfg, retryCount, res, retry) {
+    var _a;
+    return retry || retryCount < ((_a = cfg == null ? void 0 : cfg.maxNumRetry) != null ? _a : 0) && (res == null ? void 0 : res.code) === 404;
+  }
   var HlsViewTransport = class {
     /**
      * deliveryPath, when given, is a gateway-relative path from the gateway's own
@@ -42990,7 +42994,22 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
         return;
       }
-      const hls = new Hls2({ maxLiveSyncPlaybackRate: 1.1 });
+      const hls = new Hls2({
+        maxLiveSyncPlaybackRate: 1.1,
+        manifestLoadPolicy: {
+          default: {
+            maxTimeToFirstByteMs: 1e4,
+            maxLoadTimeMs: 2e4,
+            timeoutRetry: { maxNumRetry: 2, retryDelayMs: 0, maxRetryDelayMs: 0 },
+            errorRetry: {
+              maxNumRetry: 5,
+              retryDelayMs: 500,
+              maxRetryDelayMs: 2e3,
+              shouldRetry: (cfg, retryCount, _isTimeout, res, retry) => retryWarmupNotFound(cfg, retryCount, res, retry)
+            }
+          }
+        }
+      });
       this.hls = hls;
       hls.on(Hls2.Events.ERROR, (_evt, data) => {
         var _a;
