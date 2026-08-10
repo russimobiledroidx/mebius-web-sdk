@@ -89,25 +89,64 @@ describe("MebiusCaptions", () => {
     expect(onSegment.mock.calls[0]![0].text).toBe("thanks for the gift");
   });
 
-  it("drops a segment once it falls more than 5s behind the playhead, and emits cleared", () => {
+  // Staleness is measured from ARRIVAL, not from epoch-vs-playhead: the
+  // playhead can be an estimate (FlvViewTransport), and measuring against a
+  // guess silently deleted freshly-arrived captions whenever the guess ran
+  // ahead of reality.
+  it("clears a shown segment once it has been on screen longer than the window", () => {
     vi.useFakeTimers();
     vi.stubGlobal("EventSource", FakeEventSource);
-    const player = fakePlayer(1000);
-    const c = new MebiusCaptions(fakeSignaling(), player, { lang: "id" });
+    const c = new MebiusCaptions(fakeSignaling(), fakePlayer(1000), { lang: "id" });
     const onSegment = vi.fn();
     const onCleared = vi.fn();
     c.on("segment", onSegment);
     c.on("cleared", onCleared);
     c.start("st_1");
 
-    // interim, so it stays pending after being shown once
-    FakeEventSource.instances[0]!.emit(caption({ state: "interim" }));
+    FakeEventSource.instances[0]!.emit(caption());
     vi.advanceTimersByTime(100);
     expect(onSegment).toHaveBeenCalledTimes(1);
+    expect(onCleared).not.toHaveBeenCalled();
 
-    (player as unknown as { currentEpochMs: () => number }).currentEpochMs = () => 7000; // +6s
-    vi.advanceTimersByTime(100);
+    vi.advanceTimersByTime(6000); // past the 5s on-screen window
     expect(onCleared).toHaveBeenCalledWith({ segmentId: "s1" });
+  });
+
+  // Regression: `if (now == null) return` meant a transport with no playhead
+  // (WHEP, or HLS before its first PROGRAM-DATE-TIME) rendered NOTHING, ever —
+  // a silently dead feature rather than a slightly mistimed one.
+  it("renders on arrival when the transport has no playhead at all", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const c = new MebiusCaptions(fakeSignaling(), fakePlayer(null), { lang: "id" });
+    const onSegment = vi.fn();
+    c.on("segment", onSegment);
+    c.start("st_1");
+
+    FakeEventSource.instances[0]!.emit(caption());
+    vi.advanceTimersByTime(100);
+    expect(onSegment).toHaveBeenCalledTimes(1);
+    expect(onSegment.mock.calls[0]![0].translation).toBe("halo");
+  });
+
+  // Regression: a playhead that never reaches a segment's epochMs (a broken or
+  // badly-estimated clock) used to queue that segment forever. Bounded wait,
+  // then show it — a wrong clock must not become permanent silence.
+  it("releases a segment whose playhead never catches up, after a bounded wait", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("EventSource", FakeEventSource);
+    // Playhead frozen far in the past: `due <= now` is never true.
+    const c = new MebiusCaptions(fakeSignaling(), fakePlayer(0), { lang: "id" });
+    const onSegment = vi.fn();
+    c.on("segment", onSegment);
+    c.start("st_1");
+
+    FakeEventSource.instances[0]!.emit(caption({ epochMs: 999_999 }));
+    vi.advanceTimersByTime(100);
+    expect(onSegment).not.toHaveBeenCalled(); // still waiting for sync
+
+    vi.advanceTimersByTime(4500); // past the bounded wait
+    expect(onSegment).toHaveBeenCalledTimes(1);
   });
 
   it("stop() closes the connection and clears buffered state", () => {
