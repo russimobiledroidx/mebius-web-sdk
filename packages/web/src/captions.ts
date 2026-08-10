@@ -45,7 +45,7 @@ const STALE_MS = 5000;
  * not that the audio is in the future — so this bounds "wait for sync" and
  * keeps a clock problem from turning into permanent silence.
  */
-const MAX_QUEUE_MS = 4000;
+const MAX_QUEUE_MS = 1500;
 
 /**
  * Subscribes to one stream's caption feed. Create with

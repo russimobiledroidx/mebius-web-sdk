@@ -145,7 +145,7 @@ describe("MebiusCaptions", () => {
     vi.advanceTimersByTime(100);
     expect(onSegment).not.toHaveBeenCalled(); // still waiting for sync
 
-    vi.advanceTimersByTime(4500); // past the bounded wait
+    vi.advanceTimersByTime(2000); // past the bounded wait
     expect(onSegment).toHaveBeenCalledTimes(1);
   });
 

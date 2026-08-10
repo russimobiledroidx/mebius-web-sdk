@@ -52,4 +52,30 @@ describe("FlvViewTransport.playheadEpochMs", () => {
     expect(estimate).toBeLessThan(now);
     vi.restoreAllMocks();
   });
+
+  // The buffered-but-unshown media is the one part of FLV's delay that IS
+  // measurable. Reading it keeps a viewer with a shallow buffer from waiting
+  // out someone else's worst case: every millisecond of over-estimate is a
+  // caption withheld for no reason, on top of the STT latency already paid.
+  it("counts buffered-ahead media, so a shallow buffer waits less", () => {
+    const now = 1_700_000_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+
+    const withBuffer = (aheadSeconds: number) => {
+      const t = new FlvViewTransport({} as SignalingClient, "/d/fast/s1");
+      (t as unknown as { video: unknown }).video = {
+        currentTime: 10,
+        buffered: { length: 1, end: () => 10 + aheadSeconds },
+      };
+      return t.playheadEpochMs()!;
+    };
+
+    const shallow = withBuffer(0.2);
+    const deep = withBuffer(4);
+    expect(shallow).toBeGreaterThan(deep);
+    // ~3.8s of extra buffer must show up as ~3.8s further behind, not as a
+    // constant the buffer never affects.
+    expect(shallow - deep).toBeCloseTo(3800, -2);
+    vi.restoreAllMocks();
+  });
 });
