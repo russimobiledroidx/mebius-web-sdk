@@ -43811,10 +43811,17 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      * Realtime captions SSE URL. Same play token as media — the engine's
      * `PlayVerifier` gates both, so a viewer who can watch the stream can already
      * read its captions with zero extra credential.
+     *
+     * `/api/v1/live/...`, NOT `/live/...`: unlike {@link scalePlaylistUrl}, which
+     * hits the engine's bare `/live/*` media-edge catch-all, captions are mounted
+     * under the versioned control-API group (mebius-stream-engine
+     * internal/api/routes.go) with the play-token middleware, not the proxy.
+     * Copying the media-edge prefix here 401s every request — the catch-all
+     * doesn't recognise the path and never reaches the captions handler at all.
      */
     captionsUrl(streamId, lang) {
       return this.withToken(
-        `${this.base()}/live/${encodeURIComponent(streamId)}/captions?lang=${encodeURIComponent(lang)}`
+        `${this.base()}/api/v1/live/${encodeURIComponent(streamId)}/captions?lang=${encodeURIComponent(lang)}`
       );
     }
     // Maps a neutral session kind to the concrete signaling path segment. This

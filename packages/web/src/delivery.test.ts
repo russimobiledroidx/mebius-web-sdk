@@ -57,6 +57,19 @@ describe("delivery path resolution", () => {
       expect(() => sig().deliveryUrl(hostile), `accepted ${hostile}`).toThrow();
     }
   });
+
+  // Regression: captionsUrl once copied scalePlaylistUrl's bare `/live/...`
+  // media-edge prefix. The engine mounts captions under the versioned
+  // control-API group (`/api/v1/live/...`), not the media edge's catch-all —
+  // the bare prefix 401s every request because the catch-all never reaches the
+  // captions handler at all.
+  it("captionsUrl targets the versioned control API, not the media edge", () => {
+    const url = new URL(sig().captionsUrl("s_abc", "id"));
+    expect(url.origin).toBe(GATEWAY);
+    expect(url.pathname).toBe("/api/v1/live/s_abc/captions");
+    expect(url.searchParams.get("lang")).toBe("id");
+    expect(url.searchParams.get("token")).toBe("tok");
+  });
 });
 
 describe("candidate ordering", () => {
