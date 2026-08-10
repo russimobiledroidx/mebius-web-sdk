@@ -1,4 +1,5 @@
 import { MebiusBroadcaster } from "./broadcaster.js";
+import { MebiusCaptions } from "./captions.js";
 import { mebiusError } from "./errors.js";
 import { TypedEmitter, type ClientEventMap } from "./events.js";
 import { MebiusPlayer } from "./player.js";
@@ -7,6 +8,7 @@ import type { TelemetryTarget } from "./internal/telemetry.js";
 import { readToken } from "./internal/token.js";
 import type {
   BroadcasterOptions,
+  CaptionsOptions,
   MebiusDelivery,
   MebiusInitOptions,
   PlayerOptions,
@@ -78,6 +80,23 @@ export class MebiusClient extends TypedEmitter<ClientEventMap> {
   createMonitor(): MebiusPlayer {
     this.assertConnected();
     return new MebiusPlayer(this.signaling, { mode: "low-latency" }, this.deliveries, this.telemetry, this.userId);
+  }
+
+  /**
+   * Subscribe to a stream's realtime captions.
+   *
+   * Reads the same feed a session already produces — it does NOT start the
+   * caption session itself. `captions/start` spends money and requires an API
+   * key, so it belongs to your own backend (see
+   * mebius-stream-engine/docs/API.md §5.1), called once when you want captions
+   * on for a stream. This only ever consumes what that call turned on.
+   *
+   * `player` must be the one showing `streamId`: captions are timed against its
+   * playhead, and a mismatched player would compare against the wrong clock.
+   */
+  createCaptions(player: MebiusPlayer, options: CaptionsOptions): MebiusCaptions {
+    this.assertConnected();
+    return new MebiusCaptions(this.signaling, player, options);
   }
 
   /** Close the connection and release resources. */

@@ -8,12 +8,14 @@ export { Mebius } from "./mebius.js";
 export { MebiusClient } from "./client.js";
 export { MebiusBroadcaster } from "./broadcaster.js";
 export { MebiusPlayer } from "./player.js";
+export { MebiusCaptions } from "./captions.js";
 export { MebiusError, mebiusError } from "./errors.js";
 
 export type {
   ClientEventMap,
   BroadcasterEventMap,
   PlayerEventMap,
+  CaptionsEventMap,
 } from "./events.js";
 
 export type {
@@ -27,5 +29,7 @@ export type {
   MediaConstraint,
   BroadcastStats,
   PlaybackStats,
+  CaptionsOptions,
+  CaptionSegment,
   MebiusErrorCode,
 } from "./types.js";

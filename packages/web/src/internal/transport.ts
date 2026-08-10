@@ -41,6 +41,16 @@ export interface ViewTransport {
   onEnded(cb: () => void): void;
   /** Fired when the transport (re)enters a buffering state. */
   onBuffering(cb: () => void): void;
+  /**
+   * Wall-clock time (Unix ms) the viewer is currently watching, if this route
+   * can produce one. Captions compare this against the engine's `epochMs` to
+   * decide when a segment is due — `video.currentTime` cannot be used for that,
+   * it counts from the start of playback, not from a shared clock.
+   *
+   * Absent (rather than a guess) on a route with no such signal: showing a
+   * caption at the wrong moment is worse than showing it late.
+   */
+  playheadEpochMs?(): number | null;
 }
 
 export function createPublishTransport(signaling: SignalingClient): PublishTransport {

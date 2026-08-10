@@ -23914,19 +23914,19 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         isInterstitial(item) {
           return !!(item != null && item.event);
         }
-        retreiveMediaSource(assetId, toSegment) {
+        retreiveMediaSource(assetId, toSegment2) {
           const player = this.getAssetPlayer(assetId);
           if (player) {
-            this.transferMediaFromPlayer(player, toSegment);
+            this.transferMediaFromPlayer(player, toSegment2);
           }
         }
-        transferMediaFromPlayer(player, toSegment) {
+        transferMediaFromPlayer(player, toSegment2) {
           const appendInPlace = player.interstitial.appendInPlace;
           const playerMedia = player.media;
           if (appendInPlace && playerMedia === this.primaryMedia) {
             this.bufferingAsset = null;
-            if (!toSegment || this.isInterstitial(toSegment) && !toSegment.event.appendInPlace) {
-              if (toSegment && playerMedia) {
+            if (!toSegment2 || this.isInterstitial(toSegment2) && !toSegment2.event.appendInPlace) {
+              if (toSegment2 && playerMedia) {
                 this.detachedData = {
                   media: playerMedia
                 };
@@ -23936,7 +23936,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
             const attachMediaSourceData = player.transferMedia();
             this.log(`transfer MediaSource from ${player} ${stringify(attachMediaSourceData)}`);
             this.detachedData = attachMediaSourceData;
-          } else if (toSegment && playerMedia) {
+          } else if (toSegment2 && playerMedia) {
             this.shouldPlay || (this.shouldPlay = !playerMedia.paused);
           }
         }
@@ -24955,13 +24955,13 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
           });
           return player;
         }
-        clearInterstitial(interstitial, toSegment) {
-          this.clearAssetPlayers(interstitial, toSegment);
+        clearInterstitial(interstitial, toSegment2) {
+          this.clearAssetPlayers(interstitial, toSegment2);
           interstitial.reset();
         }
-        clearAssetPlayers(interstitial, toSegment) {
+        clearAssetPlayers(interstitial, toSegment2) {
           interstitial.assetList.forEach((asset) => {
-            this.clearAssetPlayer(asset.identifier, toSegment);
+            this.clearAssetPlayer(asset.identifier, toSegment2);
           });
         }
         resetAssetPlayer(assetId) {
@@ -24973,12 +24973,12 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
             player.resetDetails();
           }
         }
-        clearAssetPlayer(assetId, toSegment) {
+        clearAssetPlayer(assetId, toSegment2) {
           const playerIndex = this.getAssetPlayerQueueIndex(assetId);
           if (playerIndex !== -1) {
             const player = this.playerQueue[playerIndex];
-            this.log(`clear ${player} toSegment: ${toSegment ? segmentToString(toSegment) : toSegment}`);
-            this.transferMediaFromPlayer(player, toSegment);
+            this.log(`clear ${player} toSegment: ${toSegment2 ? segmentToString(toSegment2) : toSegment2}`);
+            this.transferMediaFromPlayer(player, toSegment2);
             this.playerQueue.splice(playerIndex, 1);
             player.destroy();
           }
@@ -43040,6 +43040,23 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         framesPerSecond: 0
       };
     }
+    /**
+     * hls.js exposes `playingDate` straight from the segment the element is
+     * currently rendering, derived from the playlist's `EXT-X-PROGRAM-DATE-TIME`
+     * (MediaMTX writes it). Safari's native player has no such property, but
+     * `getStartDate()` (the wall-clock time of the playlist's first segment) plus
+     * elapsed `currentTime` is the same clock by construction.
+     */
+    playheadEpochMs() {
+      var _a, _b;
+      if (this.hls) return (_b = (_a = this.hls.playingDate) == null ? void 0 : _a.getTime()) != null ? _b : null;
+      const video = this.video;
+      if (video == null ? void 0 : video.getStartDate) {
+        const start = video.getStartDate().getTime();
+        if (Number.isFinite(start)) return start + video.currentTime * 1e3;
+      }
+      return null;
+    }
   };
 
   // src/internal/balanced-view-transport.ts
@@ -43428,6 +43445,86 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     return c;
   }
 
+  // src/captions.ts
+  var TICK_MS = 100;
+  var STALE_MS = 5e3;
+  var MebiusCaptions = class extends TypedEmitter {
+    /** @internal */
+    constructor(signaling, player, opts) {
+      super();
+      this.signaling = signaling;
+      this.player = player;
+      this.opts = opts;
+      this.es = null;
+      this.timer = null;
+      this.pending = /* @__PURE__ */ new Map();
+      this.shown = /* @__PURE__ */ new Set();
+    }
+    /** Open the SSE connection and begin emitting segments for `streamId`. */
+    start(streamId) {
+      if (this.es) return;
+      const url = this.signaling.captionsUrl(streamId, this.opts.lang);
+      const es = new EventSource(url);
+      es.onmessage = (ev) => this.onFrame(ev);
+      es.onerror = () => this.emit("error", void 0);
+      this.es = es;
+      this.timer = setInterval(() => this.tick(), TICK_MS);
+    }
+    /** Close the connection and drop all buffered segments. */
+    stop() {
+      var _a;
+      (_a = this.es) == null ? void 0 : _a.close();
+      this.es = null;
+      if (this.timer) clearInterval(this.timer);
+      this.timer = null;
+      this.pending.clear();
+      this.shown.clear();
+    }
+    onFrame(ev) {
+      var _a, _b;
+      let frame;
+      try {
+        frame = JSON.parse(ev.data);
+      } catch (e) {
+        return;
+      }
+      if (frame.type !== "caption" || !frame.segmentId) return;
+      const prev = this.pending.get(frame.segmentId);
+      if (prev && ((_a = frame.rev) != null ? _a : 0) < ((_b = prev.rev) != null ? _b : 0)) return;
+      this.pending.set(frame.segmentId, frame);
+    }
+    tick() {
+      var _a;
+      const now2 = this.player.currentEpochMs();
+      if (now2 == null) return;
+      for (const [id, frame] of this.pending) {
+        const due = (_a = frame.epochMs) != null ? _a : 0;
+        if (due > now2) continue;
+        if (due < now2 - STALE_MS) {
+          this.pending.delete(id);
+          if (this.shown.delete(id)) this.emit("cleared", { segmentId: id });
+          continue;
+        }
+        this.shown.add(id);
+        this.emit("segment", toSegment(id, frame, this.opts.lang));
+        if (frame.state === "final") this.pending.delete(id);
+      }
+    }
+  };
+  function toSegment(segmentId, frame, lang) {
+    var _a, _b, _c, _d, _e;
+    return {
+      segmentId,
+      rev: (_a = frame.rev) != null ? _a : 0,
+      state: frame.state === "final" ? "final" : "interim",
+      epochMs: (_b = frame.epochMs) != null ? _b : 0,
+      durationMs: (_c = frame.durationMs) != null ? _c : 0,
+      text: (_d = frame.text) != null ? _d : "",
+      translation: (_e = frame.translations) == null ? void 0 : _e[lang],
+      machineGenerated: true
+    };
+  }
+
   // src/internal/freeze-clock.ts
   var FreezeClock = class {
     constructor(now2 = Date.now) {
@@ -43600,6 +43697,20 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.video.volume = v;
       this.video.muted = v === 0;
     }
+    /**
+     * Wall-clock time (Unix ms) currently on screen, or `null` when the active
+     * route cannot produce one (HTTP-FLV, WHEP — see {@link ViewTransport}).
+     *
+     * This is what {@link MebiusClient.createCaptions} compares against a
+     * segment's `epochMs` to know when it is due. Delegating to the transport
+     * rather than reading the element directly is what keeps this correct across
+     * a route failover: the player may switch from HLS to FLV mid-session, and
+     * the clock source has to follow.
+     */
+    currentEpochMs() {
+      var _a, _b, _c;
+      return (_c = (_b = (_a = this.transport) == null ? void 0 : _a.playheadEpochMs) == null ? void 0 : _b.call(_a)) != null ? _c : null;
+    }
     attach(transport) {
       transport.onEnded(() => {
         var _a;
@@ -43695,6 +43806,16 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     /** Playlist URL for scale-mode playback. */
     scalePlaylistUrl(streamId) {
       return this.withToken(`${this.base()}/live/${encodeURIComponent(streamId)}/index.m3u8`);
+    }
+    /**
+     * Realtime captions SSE URL. Same play token as media — the engine's
+     * `PlayVerifier` gates both, so a viewer who can watch the stream can already
+     * read its captions with zero extra credential.
+     */
+    captionsUrl(streamId, lang) {
+      return this.withToken(
+        `${this.base()}/live/${encodeURIComponent(streamId)}/captions?lang=${encodeURIComponent(lang)}`
+      );
     }
     // Maps a neutral session kind to the concrete signaling path segment. This
     // mapping (publish -> WHIP, view -> WHEP) lives ONLY in this method body, so
@@ -43819,6 +43940,22 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     createMonitor() {
       this.assertConnected();
       return new MebiusPlayer(this.signaling, { mode: "low-latency" }, this.deliveries, this.telemetry, this.userId);
+    }
+    /**
+     * Subscribe to a stream's realtime captions.
+     *
+     * Reads the same feed a session already produces — it does NOT start the
+     * caption session itself. `captions/start` spends money and requires an API
+     * key, so it belongs to your own backend (see
+     * mebius-stream-engine/docs/API.md §5.1), called once when you want captions
+     * on for a stream. This only ever consumes what that call turned on.
+     *
+     * `player` must be the one showing `streamId`: captions are timed against its
+     * playhead, and a mismatched player would compare against the wrong clock.
+     */
+    createCaptions(player, options) {
+      this.assertConnected();
+      return new MebiusCaptions(this.signaling, player, options);
     }
     /** Close the connection and release resources. */
     disconnect(reason) {

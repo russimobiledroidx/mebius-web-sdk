@@ -203,6 +203,20 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     this.video.muted = v === 0;
   }
 
+  /**
+   * Wall-clock time (Unix ms) currently on screen, or `null` when the active
+   * route cannot produce one (HTTP-FLV, WHEP — see {@link ViewTransport}).
+   *
+   * This is what {@link MebiusClient.createCaptions} compares against a
+   * segment's `epochMs` to know when it is due. Delegating to the transport
+   * rather than reading the element directly is what keeps this correct across
+   * a route failover: the player may switch from HLS to FLV mid-session, and
+   * the clock source has to follow.
+   */
+  currentEpochMs(): number | null {
+    return this.transport?.playheadEpochMs?.() ?? null;
+  }
+
   private attach(transport: ViewTransport): void {
     transport.onEnded(() => {
       // Only the route currently serving may end playback. A route we already

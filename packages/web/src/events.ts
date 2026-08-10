@@ -1,5 +1,5 @@
 import type { MebiusError } from "./errors.js";
-import type { BroadcastStats, PlaybackStats } from "./types.js";
+import type { BroadcastStats, CaptionSegment, PlaybackStats } from "./types.js";
 
 // NOTE: these are `type` aliases (not interfaces) so they satisfy the
 // `Record<string, unknown>` constraint on TypedEmitter — TS only treats object
@@ -26,6 +26,16 @@ export type PlayerEventMap = {
   buffering: void;
   ended: void;
   stats: PlaybackStats;
+};
+
+/** Event payloads emitted by {@link MebiusCaptions}. */
+export type CaptionsEventMap = {
+  /** A segment became due (its `epochMs` reached the playhead). Render it. */
+  segment: CaptionSegment;
+  /** A previously-shown segment aged out (playhead passed its window). Clear it. */
+  cleared: { segmentId: string };
+  /** The SSE connection dropped. `EventSource` reconnects on its own. */
+  error: void;
 };
 
 type Listener<T> = (payload: T) => void;

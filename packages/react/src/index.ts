@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Mebius,
   type BroadcasterOptions,
+  type CaptionSegment,
   type MebiusClient,
   type MebiusBroadcaster,
   type MebiusPlayer,
@@ -193,4 +194,52 @@ export function usePlayer(
   const setVolume = useCallback((v: number) => player?.setVolume(v), [player]);
 
   return { player, videoRef, play, stop, setVolume, isPlaying };
+}
+
+export interface UseCaptionsResult {
+  /** The active segment for `lang`, or `null` when none is due right now. */
+  segment: CaptionSegment | null;
+}
+
+/**
+ * Subscribe to realtime captions for whatever `player` is currently showing.
+ *
+ * Does NOT start the caption session — that spends money and needs an API key,
+ * so it is a call your own backend makes to
+ * `POST /api/v1/live/{streamId}/captions/start` (see
+ * mebius-stream-engine/docs/API.md §5.1) before this hook has anything to show.
+ * This only reads the feed a session already produces.
+ *
+ * `streamId` must be the one `player` is playing. `lang` must match a
+ * `targetLangs` entry the session was started with, or every segment arrives
+ * with no translation for it.
+ */
+export function useCaptions(
+  client: MebiusClient | null,
+  player: MebiusPlayer | null,
+  streamId: string | null,
+  lang: string,
+): UseCaptionsResult {
+  const [segment, setSegment] = useState<CaptionSegment | null>(null);
+
+  useEffect(() => {
+    if (!client || !player || !streamId) return;
+    const captions = client.createCaptions(player, { lang });
+    // A revision or a newer segment simply replaces what's shown; only
+    // "cleared" for the segment currently on screen should blank it, otherwise
+    // an unrelated segment aging out of the buffer would flash the caption off.
+    const offSegment = captions.on("segment", (seg) => setSegment(seg));
+    const offCleared = captions.on("cleared", ({ segmentId }) => {
+      setSegment((cur) => (cur?.segmentId === segmentId ? null : cur));
+    });
+    captions.start(streamId);
+    return () => {
+      offSegment();
+      offCleared();
+      captions.stop();
+      setSegment(null);
+    };
+  }, [client, player, streamId, lang]);
+
+  return { segment };
 }
