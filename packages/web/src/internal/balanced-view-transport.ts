@@ -77,19 +77,19 @@ const EDGE_MARGIN_S = 0.4;
 const AUDIO_RETRY_MS = 2500;
 
 /**
- * Estimated end-to-end delay behind the wall clock for FLV, in ms.
+ * Delay behind the source this viewer is NOT able to measure, in ms:
+ * encoder → ingest → CDN edge → first byte on the wire.
  *
- * flv.js has no server-provided wall clock (no `EXT-X-PROGRAM-DATE-TIME`
- * equivalent) to read the way {@link HlsViewTransport} does, so this is a
- * flat guess rather than a measurement. Deliberately on the high side: per
- * mebius-stream-engine's caption design, showing a caption LATE is invisible
- * to a viewer, showing it early reads as a spoiler ("kalau estimasi tidak
- * tersedia, pakai batas atas delay, bukan nilai tengah" —
- * docs/INTEGRATION.md §6.3/§4.4). 3s covers typical FLV glass-to-glass delay
- * with margin; a real per-session RTT/buffer measurement would be tighter but
- * doesn't exist on this transport today.
+ * The part that IS measurable — how much decoded media is sitting ahead of
+ * the playhead — is read from `video.buffered` per call, so only this opaque
+ * upstream leg stays a constant.
+ *
+ * ponytail: flat 800ms for the upstream leg. A real per-session measurement
+ * would need the server to stamp wall-clock into the FLV stream (it doesn't),
+ * so the honest upgrade path is an `EXT-X-PROGRAM-DATE-TIME`-style timestamp
+ * from the engine, not more arithmetic here.
  */
-const ESTIMATED_LATENCY_MS = 3000;
+const UPSTREAM_LATENCY_MS = 800;
 
 /**
  * Resolves true when media has landed but playback still cannot start.
@@ -285,12 +285,25 @@ export class FlvViewTransport implements ViewTransport {
   }
 
   /**
-   * Estimate only — see {@link ESTIMATED_LATENCY_MS}. Without this, captions
-   * never render on the FLV route at all: {@link MebiusCaptions} withholds
-   * every segment until the playhead reaches its `epochMs`, and a transport
-   * returning `null` here means the playhead comparison never runs.
+   * Estimate — FLV carries no wall clock, so this is measured where possible
+   * and assumed where not (see {@link UPSTREAM_LATENCY_MS}).
+   *
+   * The measurable half is the decoded media queued ahead of the playhead:
+   * whatever is buffered but not yet shown is, by definition, how far behind
+   * the newest received frame this viewer is watching. A flat guess for the
+   * whole delay was previously used, and being too generous costs real time —
+   * every millisecond of over-estimate is a caption withheld for no reason,
+   * on top of the STT latency the viewer already pays.
    */
   playheadEpochMs(): number | null {
-    return Date.now() - ESTIMATED_LATENCY_MS;
+    let bufferedAheadMs = 0;
+    const ranges = this.video?.buffered;
+    if (ranges && ranges.length > 0 && this.video) {
+      const ahead = ranges.end(ranges.length - 1) - this.video.currentTime;
+      // Negative means the element reports a playhead past its own buffer,
+      // which is a transient during a seek, not a real negative latency.
+      if (Number.isFinite(ahead) && ahead > 0) bufferedAheadMs = ahead * 1000;
+    }
+    return Date.now() - UPSTREAM_LATENCY_MS - bufferedAheadMs;
   }
 }

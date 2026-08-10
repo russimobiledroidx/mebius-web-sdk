@@ -43072,7 +43072,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   var MAX_DRIFT_S = 2;
   var EDGE_MARGIN_S = 0.4;
   var AUDIO_RETRY_MS = 2500;
-  var ESTIMATED_LATENCY_MS = 3e3;
+  var UPSTREAM_LATENCY_MS = 800;
   function stalledWithData(video, ms) {
     if (video.currentTime > 0) return Promise.resolve(false);
     return new Promise((resolve) => {
@@ -43214,13 +43214,25 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       return { bitrateKbps, framesPerSecond, latencyMs: void 0 };
     }
     /**
-     * Estimate only — see {@link ESTIMATED_LATENCY_MS}. Without this, captions
-     * never render on the FLV route at all: {@link MebiusCaptions} withholds
-     * every segment until the playhead reaches its `epochMs`, and a transport
-     * returning `null` here means the playhead comparison never runs.
+     * Estimate — FLV carries no wall clock, so this is measured where possible
+     * and assumed where not (see {@link UPSTREAM_LATENCY_MS}).
+     *
+     * The measurable half is the decoded media queued ahead of the playhead:
+     * whatever is buffered but not yet shown is, by definition, how far behind
+     * the newest received frame this viewer is watching. A flat guess for the
+     * whole delay was previously used, and being too generous costs real time —
+     * every millisecond of over-estimate is a caption withheld for no reason,
+     * on top of the STT latency the viewer already pays.
      */
     playheadEpochMs() {
-      return Date.now() - ESTIMATED_LATENCY_MS;
+      var _a;
+      let bufferedAheadMs = 0;
+      const ranges = (_a = this.video) == null ? void 0 : _a.buffered;
+      if (ranges && ranges.length > 0 && this.video) {
+        const ahead = ranges.end(ranges.length - 1) - this.video.currentTime;
+        if (Number.isFinite(ahead) && ahead > 0) bufferedAheadMs = ahead * 1e3;
+      }
+      return Date.now() - UPSTREAM_LATENCY_MS - bufferedAheadMs;
     }
   };
 
@@ -43458,7 +43470,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   // src/captions.ts
   var TICK_MS = 100;
   var STALE_MS = 5e3;
-  var MAX_QUEUE_MS = 4e3;
+  var MAX_QUEUE_MS = 1500;
   var MebiusCaptions = class extends TypedEmitter {
     /** @internal */
     constructor(signaling, player, opts) {
