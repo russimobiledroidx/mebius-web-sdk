@@ -1,6 +1,6 @@
 {
   "name": "@mebius-io/web",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Mebius Client SDK for the web — live streaming, simple API.",
   "license": "MIT",
   "type": "module",

@@ -43072,6 +43072,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   var MAX_DRIFT_S = 2;
   var EDGE_MARGIN_S = 0.4;
   var AUDIO_RETRY_MS = 2500;
+  var ESTIMATED_LATENCY_MS = 3e3;
   function stalledWithData(video, ms) {
     if (video.currentTime > 0) return Promise.resolve(false);
     return new Promise((resolve) => {
@@ -43211,6 +43212,15 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         this.lastFrames = { count, atMs };
       }
       return { bitrateKbps, framesPerSecond, latencyMs: void 0 };
+    }
+    /**
+     * Estimate only — see {@link ESTIMATED_LATENCY_MS}. Without this, captions
+     * never render on the FLV route at all: {@link MebiusCaptions} withholds
+     * every segment until the playhead reaches its `epochMs`, and a transport
+     * returning `null` here means the playhead comparison never runs.
+     */
+    playheadEpochMs() {
+      return Date.now() - ESTIMATED_LATENCY_MS;
     }
   };
 

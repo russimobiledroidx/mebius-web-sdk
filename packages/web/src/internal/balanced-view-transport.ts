@@ -77,6 +77,21 @@ const EDGE_MARGIN_S = 0.4;
 const AUDIO_RETRY_MS = 2500;
 
 /**
+ * Estimated end-to-end delay behind the wall clock for FLV, in ms.
+ *
+ * flv.js has no server-provided wall clock (no `EXT-X-PROGRAM-DATE-TIME`
+ * equivalent) to read the way {@link HlsViewTransport} does, so this is a
+ * flat guess rather than a measurement. Deliberately on the high side: per
+ * mebius-stream-engine's caption design, showing a caption LATE is invisible
+ * to a viewer, showing it early reads as a spoiler ("kalau estimasi tidak
+ * tersedia, pakai batas atas delay, bukan nilai tengah" —
+ * docs/INTEGRATION.md §6.3/§4.4). 3s covers typical FLV glass-to-glass delay
+ * with margin; a real per-session RTT/buffer measurement would be tighter but
+ * doesn't exist on this transport today.
+ */
+const ESTIMATED_LATENCY_MS = 3000;
+
+/**
  * Resolves true when media has landed but playback still cannot start.
  *
  * Both halves matter. `currentTime === 0` alone is also what a slow first
@@ -267,5 +282,15 @@ export class FlvViewTransport implements ViewTransport {
     }
 
     return { bitrateKbps, framesPerSecond, latencyMs: undefined };
+  }
+
+  /**
+   * Estimate only — see {@link ESTIMATED_LATENCY_MS}. Without this, captions
+   * never render on the FLV route at all: {@link MebiusCaptions} withholds
+   * every segment until the playhead reaches its `epochMs`, and a transport
+   * returning `null` here means the playhead comparison never runs.
+   */
+  playheadEpochMs(): number | null {
+    return Date.now() - ESTIMATED_LATENCY_MS;
   }
 }
