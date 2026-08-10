@@ -15,6 +15,26 @@ import { playWithAutoplayFallback } from "./autoplay.js";
 type HlsModule = typeof import("hls.js");
 type HlsInstance = import("hls.js").default;
 
+/**
+ * Retry predicate for the playlist load. Exported for its test only.
+ *
+ * A 404 on a live playlist is usually a TIMING answer, not a permanent one: a CDN
+ * edge only packages HLS once ingest has produced segments, so a viewer joining in
+ * the first ~10s asks for a playlist that does not exist yet. hls.js never retries
+ * a 4xx on its own (retryForHttpStatus excludes 400-499), so without this the
+ * retry budget is dead config against the exact status the edge returns.
+ *
+ * 404 only — 401/403 means the play token is wrong, and retrying that is noise.
+ */
+export function retryWarmupNotFound(
+  cfg: { maxNumRetry?: number } | null | undefined,
+  retryCount: number,
+  res: { code?: number } | undefined,
+  retry: boolean,
+): boolean {
+  return retry || (retryCount < (cfg?.maxNumRetry ?? 0) && res?.code === 404);
+}
+
 export class HlsViewTransport implements ViewTransport {
   readonly kind = "hls" as const;
 
@@ -102,7 +122,30 @@ export class HlsViewTransport implements ViewTransport {
     // Everything else is left at hls.js defaults on purpose: it already reads the
     // server's own HOLD-BACK / PART-HOLD-BACK target from the playlist, and a
     // number guessed here would only override a value the server measured.
-    const hls = new Hls({ maxLiveSyncPlaybackRate: 1.1 });
+    // Manifest retry, because a 404 on the playlist is usually a TIMING answer,
+    // not a permanent one: a CDN edge only packages HLS once ingest has produced
+    // segments, so a viewer who joins in the first ~10s of a stream asks for a
+    // playlist that does not exist yet. hls.js defaults to 1 retry, which turns
+    // that warm-up window into a hard candidate failure. 5 retries with backoff
+    // capped at 2s covers ~10s of warm-up and costs nothing once the edge is hot.
+    // See retryWarmupNotFound for why the predicate is mandatory, not decoration.
+    const hls = new Hls({
+      maxLiveSyncPlaybackRate: 1.1,
+      manifestLoadPolicy: {
+        default: {
+          maxTimeToFirstByteMs: 10_000,
+          maxLoadTimeMs: 20_000,
+          timeoutRetry: { maxNumRetry: 2, retryDelayMs: 0, maxRetryDelayMs: 0 },
+          errorRetry: {
+            maxNumRetry: 5,
+            retryDelayMs: 500,
+            maxRetryDelayMs: 2_000,
+            shouldRetry: (cfg, retryCount, _isTimeout, res, retry) =>
+              retryWarmupNotFound(cfg, retryCount, res, retry),
+          },
+        },
+      },
+    });
     this.hls = hls;
     hls.on(Hls.Events.ERROR, (_evt, data) => {
       if (data.fatal) this.bufferingCb?.();
