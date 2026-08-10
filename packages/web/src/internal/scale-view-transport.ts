@@ -178,4 +178,23 @@ export class HlsViewTransport implements ViewTransport {
       framesPerSecond: 0,
     };
   }
+
+  /**
+   * hls.js exposes `playingDate` straight from the segment the element is
+   * currently rendering, derived from the playlist's `EXT-X-PROGRAM-DATE-TIME`
+   * (MediaMTX writes it). Safari's native player has no such property, but
+   * `getStartDate()` (the wall-clock time of the playlist's first segment) plus
+   * elapsed `currentTime` is the same clock by construction.
+   */
+  playheadEpochMs(): number | null {
+    if (this.hls) return this.hls.playingDate?.getTime() ?? null;
+    // getStartDate() is a real, shipped HTMLMediaElement method (used by Safari
+    // for exactly this) that TS's bundled DOM lib does not declare.
+    const video = this.video as (HTMLVideoElement & { getStartDate?: () => Date }) | null;
+    if (video?.getStartDate) {
+      const start = video.getStartDate().getTime();
+      if (Number.isFinite(start)) return start + video.currentTime * 1000;
+    }
+    return null;
+  }
 }

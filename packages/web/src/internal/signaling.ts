@@ -81,6 +81,17 @@ export class SignalingClient {
     return this.withToken(`${this.base()}/live/${encodeURIComponent(streamId)}/index.m3u8`);
   }
 
+  /**
+   * Realtime captions SSE URL. Same play token as media — the engine's
+   * `PlayVerifier` gates both, so a viewer who can watch the stream can already
+   * read its captions with zero extra credential.
+   */
+  captionsUrl(streamId: string, lang: string): string {
+    return this.withToken(
+      `${this.base()}/live/${encodeURIComponent(streamId)}/captions?lang=${encodeURIComponent(lang)}`,
+    );
+  }
+
   // Maps a neutral session kind to the concrete signaling path segment. This
   // mapping (publish -> WHIP, view -> WHEP) lives ONLY in this method body, so
   // the protocol names never appear in any exported type signature.

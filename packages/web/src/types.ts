@@ -139,6 +139,39 @@ export interface PlaybackStats {
   latencyMs?: number;
 }
 
+/** Options for {@link MebiusClient.createCaptions}. */
+export interface CaptionsOptions {
+  /**
+   * Which translation to read from each segment, e.g. `"id"`. Must match a
+   * `targetLangs` entry your backend passed to `captions/start` — the engine
+   * only ever sends the translations that session produced.
+   */
+  lang: string;
+}
+
+/**
+ * One caption segment, timed against a wall clock so it can be compared to
+ * {@link MebiusPlayer.currentEpochMs}.
+ */
+export interface CaptionSegment {
+  /** Stable id for this segment. A later revision replaces it in place. */
+  segmentId: string;
+  /** Revision counter. Only the highest-`rev` copy of a `segmentId` is kept. */
+  rev: number;
+  /** `"interim"` or `"final"`. Interim only arrives if the session enabled it. */
+  state: "interim" | "final";
+  /** Unix ms the audio was actually spoken. Compare against the playhead. */
+  epochMs: number;
+  /** How long the segment should stay on screen once due, in ms. */
+  durationMs: number;
+  /** Original transcript, in the source language. */
+  text: string;
+  /** The requested {@link CaptionsOptions.lang} translation, if produced yet. */
+  translation?: string;
+  /** Always `true`. Render a machine-generated indicator — never as a direct quote. */
+  machineGenerated: true;
+}
+
 /** Canonical Mebius error codes surfaced to your app. */
 export type MebiusErrorCode =
   | "TOKEN_EXPIRED"
