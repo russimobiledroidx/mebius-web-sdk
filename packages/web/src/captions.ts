@@ -27,6 +27,8 @@ interface CaptionFrame {
   text?: string;
   translations?: Record<string, string>;
   machineGenerated?: boolean;
+  /** Set by this client on receipt; never sent by the engine. See tick(). */
+  receivedAtMs?: number;
 }
 
 /** How often the draw loop checks the playhead against pending segments. */
@@ -36,6 +38,14 @@ const TICK_MS = 100;
  * audio the viewer never heard reads as spam, not context.
  */
 const STALE_MS = 5000;
+/**
+ * How long a segment may sit queued waiting to become due before it is shown
+ * anyway. A segment whose `epochMs` never arrives at the playhead means the
+ * playhead is wrong (a bad estimate, a transport clock that never advances),
+ * not that the audio is in the future — so this bounds "wait for sync" and
+ * keeps a clock problem from turning into permanent silence.
+ */
+const MAX_QUEUE_MS = 4000;
 
 /**
  * Subscribes to one stream's caption feed. Create with
@@ -95,23 +105,44 @@ export class MebiusCaptions extends TypedEmitter<CaptionsEventMap> {
     // segment in place, and a reconnect can redeliver an older one.
     const prev = this.pending.get(frame.segmentId);
     if (prev && (frame.rev ?? 0) < (prev.rev ?? 0)) return;
+    frame.receivedAtMs = Date.now();
     this.pending.set(frame.segmentId, frame);
   }
 
   private tick(): void {
     const now = this.player.currentEpochMs();
-    if (now == null) return;
     for (const [id, frame] of this.pending) {
       const due = frame.epochMs ?? 0;
-      if (due > now) continue; // not yet — leave it queued
-      if (due < now - STALE_MS) {
+      const waitedMs = Date.now() - (frame.receivedAtMs ?? 0);
+
+      // No playhead from the active transport (WHEP today, or HLS before its
+      // first PROGRAM-DATE-TIME lands): render on arrival instead of waiting
+      // for a clock that will never come. Captions may then run slightly ahead
+      // of the picture, which the engine's design prefers to avoid — but the
+      // alternative here is not "slightly early", it is a feature that is
+      // permanently, silently blank, which is strictly worse.
+      const dueNow = now == null ? true : due <= now;
+      if (!dueNow) {
+        // A segment that never becomes due is a broken clock, not a future
+        // segment. Release it rather than queue it forever.
+        if (waitedMs < MAX_QUEUE_MS) continue;
+      }
+
+      // Stale only counts from when WE received it, never from epoch-vs-
+      // playhead: the playhead can be an estimate (see FlvViewTransport), and
+      // measuring staleness against a guess silently deleted freshly-arrived
+      // captions whenever the guess ran ahead of reality. Time spent on screen
+      // is the thing being bounded, so time since arrival is what to measure.
+      if (waitedMs > STALE_MS && this.shown.has(id)) {
         this.pending.delete(id);
-        if (this.shown.delete(id)) this.emit("cleared", { segmentId: id });
+        this.shown.delete(id);
+        this.emit("cleared", { segmentId: id });
         continue;
       }
+
+      if (this.shown.has(id) && frame.state === "final") continue;
       this.shown.add(id);
       this.emit("segment", toSegment(id, frame, this.opts.lang));
-      if (frame.state === "final") this.pending.delete(id);
     }
   }
 }

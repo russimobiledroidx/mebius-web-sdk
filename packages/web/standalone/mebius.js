@@ -43458,6 +43458,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   // src/captions.ts
   var TICK_MS = 100;
   var STALE_MS = 5e3;
+  var MAX_QUEUE_MS = 4e3;
   var MebiusCaptions = class extends TypedEmitter {
     /** @internal */
     constructor(signaling, player, opts) {
@@ -43501,23 +43502,28 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       if (frame.type !== "caption" || !frame.segmentId) return;
       const prev = this.pending.get(frame.segmentId);
       if (prev && ((_a = frame.rev) != null ? _a : 0) < ((_b = prev.rev) != null ? _b : 0)) return;
+      frame.receivedAtMs = Date.now();
       this.pending.set(frame.segmentId, frame);
     }
     tick() {
-      var _a;
+      var _a, _b;
       const now2 = this.player.currentEpochMs();
-      if (now2 == null) return;
       for (const [id, frame] of this.pending) {
         const due = (_a = frame.epochMs) != null ? _a : 0;
-        if (due > now2) continue;
-        if (due < now2 - STALE_MS) {
+        const waitedMs = Date.now() - ((_b = frame.receivedAtMs) != null ? _b : 0);
+        const dueNow = now2 == null ? true : due <= now2;
+        if (!dueNow) {
+          if (waitedMs < MAX_QUEUE_MS) continue;
+        }
+        if (waitedMs > STALE_MS && this.shown.has(id)) {
           this.pending.delete(id);
-          if (this.shown.delete(id)) this.emit("cleared", { segmentId: id });
+          this.shown.delete(id);
+          this.emit("cleared", { segmentId: id });
           continue;
         }
+        if (this.shown.has(id) && frame.state === "final") continue;
         this.shown.add(id);
         this.emit("segment", toSegment(id, frame, this.opts.lang));
-        if (frame.state === "final") this.pending.delete(id);
       }
     }
   };
