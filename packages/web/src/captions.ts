@@ -25,6 +25,7 @@ interface CaptionFrame {
   epochMs?: number;
   durationMs?: number;
   text?: string;
+  srcLang?: string;
   translations?: Record<string, string>;
   machineGenerated?: boolean;
   /** Set by this client on receipt; never sent by the engine. See tick(). */
@@ -61,7 +62,13 @@ export class MebiusCaptions extends TypedEmitter<CaptionsEventMap> {
   private es: EventSource | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly pending = new Map<string, CaptionFrame>();
-  private readonly shown = new Set<string>();
+  /**
+   * segmentId -> the rev already handed to listeners. Not a Set: with interim
+   * revisions on, a segment stays pending while it is being corrected, and a
+   * plain "have I shown this id" check re-emits the same unchanged text on
+   * every 100ms tick. Comparing revs emits exactly once per actual revision.
+   */
+  private readonly shown = new Map<string, number>();
 
   /** @internal */
   constructor(
@@ -140,8 +147,9 @@ export class MebiusCaptions extends TypedEmitter<CaptionsEventMap> {
         continue;
       }
 
-      if (this.shown.has(id) && frame.state === "final") continue;
-      this.shown.add(id);
+      const rev = frame.rev ?? 0;
+      if (this.shown.get(id) === rev) continue;
+      this.shown.set(id, rev);
       this.emit("segment", toSegment(id, frame, this.opts.lang));
     }
   }
@@ -155,6 +163,7 @@ function toSegment(segmentId: string, frame: CaptionFrame, lang: string): Captio
     epochMs: frame.epochMs ?? 0,
     durationMs: frame.durationMs ?? 0,
     text: frame.text ?? "",
+    srcLang: frame.srcLang,
     translation: frame.translations?.[lang],
     machineGenerated: true,
   };

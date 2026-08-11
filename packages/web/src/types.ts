@@ -166,6 +166,13 @@ export interface CaptionSegment {
   durationMs: number;
   /** Original transcript, in the source language. */
   text: string;
+  /**
+   * Language `text` is actually in, as the recogniser identified it. With an
+   * "auto" source this varies per sentence, so a client showing `text` as a
+   * subtitle must check this rather than assume it matches what the viewer
+   * asked for.
+   */
+  srcLang?: string;
   /** The requested {@link CaptionsOptions.lang} translation, if produced yet. */
   translation?: string;
   /** Always `true`. Render a machine-generated indicator — never as a direct quote. */
