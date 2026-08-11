@@ -43471,6 +43471,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   var TICK_MS = 100;
   var STALE_MS = 5e3;
   var MAX_QUEUE_MS = 1500;
+  var HIDDEN_GRACE_MS = 6e4;
   var MebiusCaptions = class extends TypedEmitter {
     /** @internal */
     constructor(signaling, player, opts) {
@@ -43488,26 +43489,75 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
        * every 100ms tick. Comparing revs emits exactly once per actual revision.
        */
       this.shown = /* @__PURE__ */ new Map();
+      /** Kept so the feed can be reopened after a hidden-tab suspend. */
+      this.streamId = null;
+      this.hiddenTimer = null;
+      this.onVisibility = null;
     }
     /** Open the SSE connection and begin emitting segments for `streamId`. */
     start(streamId) {
       if (this.es) return;
-      const url = this.signaling.captionsUrl(streamId, this.opts.lang);
-      const es = new EventSource(url);
+      this.streamId = streamId;
+      this.openFeed();
+      this.watchVisibility();
+    }
+    /** Close the connection and drop all buffered segments. */
+    stop() {
+      this.streamId = null;
+      if (this.onVisibility && typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", this.onVisibility);
+      }
+      this.onVisibility = null;
+      if (this.hiddenTimer) clearTimeout(this.hiddenTimer);
+      this.hiddenTimer = null;
+      this.closeFeed();
+      this.pending.clear();
+      this.shown.clear();
+    }
+    openFeed() {
+      if (this.es || !this.streamId) return;
+      const es = new EventSource(this.signaling.captionsUrl(this.streamId, this.opts.lang));
       es.onmessage = (ev) => this.onFrame(ev);
       es.onerror = () => this.emit("error", void 0);
       this.es = es;
       this.timer = setInterval(() => this.tick(), TICK_MS);
     }
-    /** Close the connection and drop all buffered segments. */
-    stop() {
+    closeFeed() {
       var _a;
       (_a = this.es) == null ? void 0 : _a.close();
       this.es = null;
       if (this.timer) clearInterval(this.timer);
       this.timer = null;
-      this.pending.clear();
-      this.shown.clear();
+    }
+    /**
+     * Drop the feed while the page is hidden, restore it when it comes back.
+     *
+     * Nothing here is about rendering — a hidden tab shows no captions either
+     * way. It is about not holding a subscriber open, since that subscriber is
+     * what keeps a billed session alive on the engine.
+     *
+     * Buffered segments are deliberately kept across a suspend: they age out on
+     * their own (STALE_MS) and clearing them would blank the screen on return
+     * for no benefit.
+     */
+    watchVisibility() {
+      if (typeof document === "undefined") return;
+      this.onVisibility = () => {
+        if (document.visibilityState === "hidden") {
+          if (this.hiddenTimer) return;
+          this.hiddenTimer = setTimeout(() => {
+            this.hiddenTimer = null;
+            this.closeFeed();
+          }, HIDDEN_GRACE_MS);
+          return;
+        }
+        if (this.hiddenTimer) {
+          clearTimeout(this.hiddenTimer);
+          this.hiddenTimer = null;
+        }
+        this.openFeed();
+      };
+      document.addEventListener("visibilitychange", this.onVisibility);
     }
     onFrame(ev) {
       var _a, _b;

@@ -47,6 +47,19 @@ const STALE_MS = 5000;
  * keeps a clock problem from turning into permanent silence.
  */
 const MAX_QUEUE_MS = 1500;
+/**
+ * How long the page may stay hidden before the feed is dropped.
+ *
+ * A caption session bills per second of broadcast audio and the engine only
+ * stops one once nobody is subscribed — so a viewer who leaves a tab open in
+ * the background keeps a session billing, up to its four-hour cap, while
+ * reading nothing (captions are unreadable in a hidden tab by definition).
+ *
+ * Long enough that ordinary tab-switching does not churn the connection,
+ * short enough that an abandoned tab costs ~2.5 minutes (this window, then
+ * the engine's own ~90s idle stop) instead of hours.
+ */
+const HIDDEN_GRACE_MS = 60_000;
 
 /**
  * Subscribes to one stream's caption feed. Create with
@@ -69,6 +82,10 @@ export class MebiusCaptions extends TypedEmitter<CaptionsEventMap> {
    * every 100ms tick. Comparing revs emits exactly once per actual revision.
    */
   private readonly shown = new Map<string, number>();
+  /** Kept so the feed can be reopened after a hidden-tab suspend. */
+  private streamId: string | null = null;
+  private hiddenTimer: ReturnType<typeof setTimeout> | null = null;
+  private onVisibility: (() => void) | null = null;
 
   /** @internal */
   constructor(
@@ -82,22 +99,70 @@ export class MebiusCaptions extends TypedEmitter<CaptionsEventMap> {
   /** Open the SSE connection and begin emitting segments for `streamId`. */
   start(streamId: string): void {
     if (this.es) return;
-    const url = this.signaling.captionsUrl(streamId, this.opts.lang);
-    const es = new EventSource(url);
+    this.streamId = streamId;
+    this.openFeed();
+    this.watchVisibility();
+  }
+
+  /** Close the connection and drop all buffered segments. */
+  stop(): void {
+    this.streamId = null;
+    if (this.onVisibility && typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.onVisibility);
+    }
+    this.onVisibility = null;
+    if (this.hiddenTimer) clearTimeout(this.hiddenTimer);
+    this.hiddenTimer = null;
+    this.closeFeed();
+    this.pending.clear();
+    this.shown.clear();
+  }
+
+  private openFeed(): void {
+    if (this.es || !this.streamId) return;
+    const es = new EventSource(this.signaling.captionsUrl(this.streamId, this.opts.lang));
     es.onmessage = (ev) => this.onFrame(ev);
     es.onerror = () => this.emit("error", undefined);
     this.es = es;
     this.timer = setInterval(() => this.tick(), TICK_MS);
   }
 
-  /** Close the connection and drop all buffered segments. */
-  stop(): void {
+  private closeFeed(): void {
     this.es?.close();
     this.es = null;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    this.pending.clear();
-    this.shown.clear();
+  }
+
+  /**
+   * Drop the feed while the page is hidden, restore it when it comes back.
+   *
+   * Nothing here is about rendering — a hidden tab shows no captions either
+   * way. It is about not holding a subscriber open, since that subscriber is
+   * what keeps a billed session alive on the engine.
+   *
+   * Buffered segments are deliberately kept across a suspend: they age out on
+   * their own (STALE_MS) and clearing them would blank the screen on return
+   * for no benefit.
+   */
+  private watchVisibility(): void {
+    if (typeof document === "undefined") return;
+    this.onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        if (this.hiddenTimer) return;
+        this.hiddenTimer = setTimeout(() => {
+          this.hiddenTimer = null;
+          this.closeFeed();
+        }, HIDDEN_GRACE_MS);
+        return;
+      }
+      if (this.hiddenTimer) {
+        clearTimeout(this.hiddenTimer);
+        this.hiddenTimer = null;
+      }
+      this.openFeed();
+    };
+    document.addEventListener("visibilitychange", this.onVisibility);
   }
 
   private onFrame(ev: MessageEvent<string>): void {
