@@ -157,3 +157,27 @@ describe("MebiusCaptions", () => {
     expect(FakeEventSource.instances[0]!.closed).toBe(true);
   });
 });
+
+// With interim revisions on, a segment stays pending while it is corrected.
+// A plain "already shown this id" check re-emitted the same unchanged text on
+// every 100ms tick — 10 renders a second of identical words.
+describe("MebiusCaptions interim revisions", () => {
+  it("emits once per revision, not once per tick", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const c = new MebiusCaptions(fakeSignaling(), fakePlayer(9_999_999), { lang: "id" });
+    const onSegment = vi.fn();
+    c.on("segment", onSegment);
+    c.start("st_1");
+
+    const es = FakeEventSource.instances[0]!;
+    es.emit(caption({ rev: 0, state: "interim", text: "thanks" }));
+    vi.advanceTimersByTime(500); // five ticks, one revision
+    expect(onSegment).toHaveBeenCalledTimes(1);
+
+    es.emit(caption({ rev: 1, state: "interim", text: "thanks for" }));
+    vi.advanceTimersByTime(500);
+    expect(onSegment).toHaveBeenCalledTimes(2);
+    expect(onSegment.mock.calls[1]![0].text).toBe("thanks for");
+  });
+});

@@ -43481,7 +43481,13 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.es = null;
       this.timer = null;
       this.pending = /* @__PURE__ */ new Map();
-      this.shown = /* @__PURE__ */ new Set();
+      /**
+       * segmentId -> the rev already handed to listeners. Not a Set: with interim
+       * revisions on, a segment stays pending while it is being corrected, and a
+       * plain "have I shown this id" check re-emits the same unchanged text on
+       * every 100ms tick. Comparing revs emits exactly once per actual revision.
+       */
+      this.shown = /* @__PURE__ */ new Map();
     }
     /** Open the SSE connection and begin emitting segments for `streamId`. */
     start(streamId) {
@@ -43518,7 +43524,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.pending.set(frame.segmentId, frame);
     }
     tick() {
-      var _a, _b;
+      var _a, _b, _c;
       const now2 = this.player.currentEpochMs();
       for (const [id, frame] of this.pending) {
         const due = (_a = frame.epochMs) != null ? _a : 0;
@@ -43533,8 +43539,9 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
           this.emit("cleared", { segmentId: id });
           continue;
         }
-        if (this.shown.has(id) && frame.state === "final") continue;
-        this.shown.add(id);
+        const rev = (_c = frame.rev) != null ? _c : 0;
+        if (this.shown.get(id) === rev) continue;
+        this.shown.set(id, rev);
         this.emit("segment", toSegment(id, frame, this.opts.lang));
       }
     }
@@ -43548,6 +43555,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       epochMs: (_b = frame.epochMs) != null ? _b : 0,
       durationMs: (_c = frame.durationMs) != null ? _c : 0,
       text: (_d = frame.text) != null ? _d : "",
+      srcLang: frame.srcLang,
       translation: (_e = frame.translations) == null ? void 0 : _e[lang],
       machineGenerated: true
     };
