@@ -1,5 +1,37 @@
 # @mebius-io/react
 
+## 0.6.2
+
+### Patch Changes
+
+- Release the three packages together again, and stop pinning `@mebius-io/web` to
+  one exact version from `@mebius-io/react`.
+
+  The packages are declared a `fixed` group, which means changesets releases them
+  at one shared version. Nothing had run `changeset version` since the repo was
+  scaffolded — versions were hand-edited in feature commits instead — so the group
+  drifted to 0.6.1 / 0.5.0 / 0.4.6.
+
+  The drift was not cosmetic. `@mebius-io/react` depended on `@mebius-io/web`
+  through `workspace:*`, which pnpm publishes as an exact version rather than a
+  range, so `@mebius-io/react@0.5.0` required exactly `@mebius-io/web@0.5.0` and no
+  consumer could upgrade past it. That is the release which introduced
+  `useCaptions`, and 0.5.0 is the one web version where captions cannot work:
+  `captionsUrl()` targeted the media-edge catch-all instead of the versioned
+  control API, so every caption subscription answered 401. The fix shipped in web
+  0.5.1 and five more caption fixes followed, none of which a React consumer could
+  reach.
+
+  The dependency is now `workspace:^`, published as a caret range, so a patch to
+  `@mebius-io/web` reaches React consumers without a new `@mebius-io/react`.
+
+  `@mebius-io/react-native` has no code change here. It carries no dependency on
+  `@mebius-io/web` and no captions support; it moves only because the fixed group
+  moves.
+
+- Updated dependencies
+  - @mebius-io/web@0.6.2
+
 ## 0.4.6
 
 ### Patch Changes

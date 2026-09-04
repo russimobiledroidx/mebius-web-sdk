@@ -52,7 +52,7 @@ importers:
   packages/react:
     dependencies:
       '@mebius-io/web':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../web
     devDependencies:
       '@types/react':
