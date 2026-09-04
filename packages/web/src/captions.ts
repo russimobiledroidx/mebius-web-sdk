@@ -187,9 +187,9 @@ export class MebiusCaptions extends TypedEmitter<CaptionsEventMap> {
       const due = frame.epochMs ?? 0;
       const waitedMs = Date.now() - (frame.receivedAtMs ?? 0);
 
-      // No playhead from the active transport (WHEP today, or HLS before its
-      // first PROGRAM-DATE-TIME lands): render on arrival instead of waiting
-      // for a clock that will never come. Captions may then run slightly ahead
+      // No playhead from the active transport — a real-time route today, or a
+      // segmented one before its first timestamped segment lands: render on
+      // arrival instead of waiting for a clock that will never come. Captions may then run slightly ahead
       // of the picture, which the engine's design prefers to avoid — but the
       // alternative here is not "slightly early", it is a feature that is
       // permanently, silently blank, which is strictly worse.

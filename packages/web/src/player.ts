@@ -205,13 +205,15 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
 
   /**
    * Wall-clock time (Unix ms) currently on screen, or `null` when the active
-   * route cannot produce one (HTTP-FLV, WHEP — see {@link ViewTransport}).
+   * route cannot produce one. A real-time route carries no wall clock at all,
+   * and a segmented route has none until its first timestamped segment arrives
+   * (see {@link ViewTransport}).
    *
    * This is what {@link MebiusClient.createCaptions} compares against a
    * segment's `epochMs` to know when it is due. Delegating to the transport
    * rather than reading the element directly is what keeps this correct across
-   * a route failover: the player may switch from HLS to FLV mid-session, and
-   * the clock source has to follow.
+   * a route failover: the player may change route mid-session, and the clock
+   * source has to follow.
    */
   currentEpochMs(): number | null {
     return this.transport?.playheadEpochMs?.() ?? null;
