@@ -7,7 +7,7 @@
 import type { BroadcastStats, MebiusDelivery, PlaybackMode, PlaybackStats } from "../types.js";
 import type { SignalingClient } from "./signaling.js";
 import { WhipPublishTransport } from "./publish-transport.js";
-import { WhepViewTransport } from "./ll-view-transport.js";
+import { WhepViewTransport, DEFAULT_REALTIME_TARGET_MS } from "./ll-view-transport.js";
 import { HlsViewTransport } from "./scale-view-transport.js";
 import { FlvViewTransport } from "./balanced-view-transport.js";
 
@@ -76,9 +76,13 @@ function transportFor(
   kind: string,
   path: string,
   signaling: SignalingClient,
+  targetLatencyMs?: number,
 ): ViewTransport | null {
-  if (kind === KIND_FAST) return canPlayBuffered() ? new FlvViewTransport(signaling, path) : null;
-  if (kind === KIND_WIDE || kind === KIND_LOCAL) return new HlsViewTransport(signaling, path);
+  const targetS = targetLatencyMs === undefined ? undefined : targetLatencyMs / 1000;
+  if (kind === KIND_FAST)
+    return canPlayBuffered() ? new FlvViewTransport(signaling, path, targetS) : null;
+  if (kind === KIND_WIDE || kind === KIND_LOCAL)
+    return new HlsViewTransport(signaling, path, targetS);
   // An unknown kind is a newer gateway talking to an older SDK. Skip it rather
   // than guess: the list is ordered, so the next entry is the intended fallback.
   return null;
@@ -95,28 +99,41 @@ function transportFor(
  *
  * `deliveries` comes from the gateway and is already in the gateway's preferred
  * order; ordering policy therefore lives server-side, not here.
+ *
+ * `targetLatencyMs` is passed to every candidate rather than to one of them: a
+ * route failover must not also silently change how much delay the viewer agreed
+ * to trade for a steady picture.
  */
 export function createViewCandidates(
   mode: PlaybackMode,
   signaling: SignalingClient,
   deliveries: readonly MebiusDelivery[] = [],
+  targetLatencyMs?: number,
 ): ViewTransport[] {
   const fromGateway = (kinds: readonly string[]): ViewTransport[] =>
     deliveries
       .filter((d) => kinds.includes(d.kind))
-      .map((d) => transportFor(d.kind, d.path, signaling))
+      .map((d) => transportFor(d.kind, d.path, signaling, targetLatencyMs))
       .filter((t): t is ViewTransport => t !== null);
 
   // Every mode ends with the origin playlist, reachable with no delivery list at
   // all. Without this, a caller that never passes `deliveries` (every 0.x
   // integration today) would get an empty candidate list and fail to play.
-  const originFallback = new HlsViewTransport(signaling);
+  const originFallback = new HlsViewTransport(
+    signaling,
+    undefined,
+    targetLatencyMs === undefined ? undefined : targetLatencyMs / 1000,
+  );
   const allKinds = [KIND_FAST, KIND_WIDE, KIND_LOCAL];
 
   switch (mode) {
     case "low-latency":
       // The real-time pull is not in `deliveries` — it is signaled, not fetched.
-      return [new WhepViewTransport(signaling), ...fromGateway(allKinds), originFallback];
+      return [
+        new WhepViewTransport(signaling, targetLatencyMs ?? DEFAULT_REALTIME_TARGET_MS),
+        ...fromGateway(allKinds),
+        originFallback,
+      ];
     case "balanced":
       return [...fromGateway(allKinds), originFallback];
     case "scale":

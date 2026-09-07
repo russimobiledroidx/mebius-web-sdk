@@ -38,6 +38,21 @@ export interface MebiusConnectOptions {
    */
   token: string;
   /**
+   * Called when the current token is about to expire, to mint the next one.
+   * Return a fresh token from the same backend endpoint that produced `token`.
+   *
+   * WITHOUT this, a connection lives exactly as long as its token: Mebius emits
+   * `TOKEN_EXPIRED` at that moment and playback stops. That is fine for a short
+   * watch and wrong for anything unattended — a stream left running overnight,
+   * a lobby screen, a 24/7 broadcast — where nobody is there to reconnect.
+   *
+   * WITH it, Mebius refreshes ahead of expiry and keeps the session going
+   * indefinitely; a `"token-refreshed"` event is emitted each time. If the call
+   * fails it is retried with backoff until the old token genuinely expires, so a
+   * brief backend blip costs nothing.
+   */
+  getToken?: () => string | Promise<string>;
+  /**
    * The `deliveries` list your backend received together with the token. Pass it
    * through as-is and Mebius will pick the best route for each viewer's device,
    * falling back automatically if one stops delivering frames.
@@ -96,6 +111,28 @@ export type PlaybackMode = "auto" | "low-latency" | "balanced" | "scale";
 export interface PlayerOptions {
   /** Defaults to `"auto"` — let Mebius choose per viewer. */
   mode?: PlaybackMode;
+  /**
+   * How much delay to trade for smoothness, in milliseconds. Higher is steadier.
+   *
+   * Mebius holds roughly this much video ahead of the picture. That buffer is
+   * what absorbs an unsteady network: when a piece of video arrives late or has
+   * to be re-sent, it still lands before its turn to be shown, and the viewer
+   * sees nothing. With too small a buffer the same event freezes the picture —
+   * and a freeze is not brief, because video can only resume at the next
+   * complete frame, typically a second or two later. Small buffers therefore do
+   * not produce small glitches; they produce multi-second stalls.
+   *
+   * Pick from the viewing experience, not the number:
+   *   - `~300` (default on the real-time route) — conversational: co-hosts, PK
+   *     battles, anything where people talk back and delay is felt.
+   *   - `1500`-`3000` — watching: screen shares, presentations, long unattended
+   *     broadcasts. Costs a couple of seconds nobody notices and removes the
+   *     stalls everybody notices.
+   *
+   * Applies to whichever route serves the viewer, so the trade you choose holds
+   * even when Mebius falls back to another one.
+   */
+  targetLatencyMs?: number;
 }
 
 /**
@@ -135,8 +172,25 @@ export interface PlaybackStats {
   bitrateKbps?: number;
   /** Frames per second currently being rendered, when known. */
   framesPerSecond?: number;
-  /** Estimated end-to-end latency in milliseconds, if known. */
+  /**
+   * How far behind the source the picture is running, in milliseconds, when the
+   * route can measure it. This is the delay the viewer actually experiences.
+   */
   latencyMs?: number;
+  /** Round-trip time to the serving edge in milliseconds, if known. */
+  rttMs?: number;
+  /** Percentage of video that had to be re-sent or was lost, if known. */
+  packetLossPct?: number;
+  /**
+   * Milliseconds the picture was frozen since the previous reading, when the
+   * route measures this itself.
+   *
+   * Some routes must: a real-time connection can sit frozen for seconds while
+   * the connection reports perfect health and the video element raises no
+   * event, so a freeze there is invisible from the outside. A route that leaves
+   * this absent is one whose stalls are already visible to the player.
+   */
+  freezeMs?: number;
 }
 
 /** Options for {@link MebiusClient.createCaptions}. */

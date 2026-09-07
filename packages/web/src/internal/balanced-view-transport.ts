@@ -57,17 +57,29 @@ const LIVE_FLV_CONFIG = {
 } as const;
 
 /**
- * Seconds behind the newest buffered byte before we skip forward.
- *
- * flv.js does not chase the live edge (that is mpegts.js). Without this, every
- * stall the network hands us is permanent latency: the player resumes where it
- * paused and stays that far behind for the rest of the session, so a viewer who
- * hit two stalls is minutes behind by the end. Bounded at 2s — below that the
- * skip is more visible than the delay it removes.
+ * Default seconds of video held ahead of the picture on this route, when the
+ * app states no preference. See PlayerOptions.targetLatencyMs.
  */
-const MAX_DRIFT_S = 2;
-/** Where to land when skipping: short of the edge, or we starve immediately. */
-const EDGE_MARGIN_S = 0.4;
+export const DEFAULT_BALANCED_TARGET_S = 2;
+
+/**
+ * Speed used to close a gap, and to open one. Both are deliberately tiny.
+ *
+ * Correcting drift by JUMPING the playhead is what this replaced, and the jump
+ * was itself a visible glitch — one that fired every time the buffer recovered,
+ * so the route meant to be the smooth one produced a stutter as a matter of
+ * routine. Changing speed by 2-5% is inaudible and invisible, and it converges
+ * within a minute. Above 1.1 the pitch shift starts to be heard, which is worse
+ * than the delay it buys back.
+ */
+const CATCH_UP_RATE = 1.05;
+const BUILD_UP_RATE = 0.98;
+
+/** Drift, as a multiple of target, where speed alone would take too long. */
+const SEEK_AT = 4;
+/** Drift band around the target that is left alone, as multiples of target. */
+const CATCH_UP_ABOVE = 1.5;
+const BUILD_UP_BELOW = 0.9;
 
 /**
  * How long the first attempt gets to produce a frame before the audio-less
@@ -118,15 +130,45 @@ function stalledWithData(video: HTMLVideoElement, ms: number): Promise<boolean> 
 }
 
 /**
- * Skip to the live edge when playback has fallen behind it. Exported for test;
- * a no-op when the gap is small, so it is safe on every `timeupdate`.
+ * Hold the picture `targetS` behind the newest data, correcting by speed rather
+ * than by jumping. Exported for its test; safe to call on every `timeupdate`.
+ *
+ * The cushion is the whole point of this route. Video that has arrived but is
+ * not yet on screen is what absorbs an unsteady network — a late or re-sent
+ * piece still lands before its turn, and the viewer sees nothing. Run with no
+ * cushion and the same event empties the buffer and freezes the picture.
+ *
+ * Which is what the previous policy guaranteed. It jumped to 0.4s behind the
+ * newest byte whenever the buffer grew past 2s, so the cushion was destroyed
+ * every time it recovered, and the jump was a visible stutter of its own. The
+ * buffer could only ever oscillate between "too thin to protect anything" and
+ * "about to be thrown away".
+ *
+ * Four bands, with a dead zone between them so the correction cannot oscillate:
+ * far too far behind, jump (speed would take minutes); somewhat behind, play
+ * slightly fast; near target, leave alone; too close to the edge, play slightly
+ * slow until the cushion is rebuilt.
  */
-export function chaseLiveEdge(video: HTMLVideoElement): void {
+export function syncLiveEdge(video: HTMLVideoElement, targetS = DEFAULT_BALANCED_TARGET_S): void {
   const ranges = video.buffered;
   if (ranges.length === 0) return;
   const edge = ranges.end(ranges.length - 1);
-  if (edge - video.currentTime <= MAX_DRIFT_S) return;
-  video.currentTime = edge - EDGE_MARGIN_S;
+  const drift = edge - video.currentTime;
+
+  if (drift > targetS * SEEK_AT) {
+    video.currentTime = edge - targetS;
+    video.playbackRate = 1;
+    return;
+  }
+  if (drift > targetS * CATCH_UP_ABOVE) {
+    video.playbackRate = CATCH_UP_RATE;
+    return;
+  }
+  if (drift < targetS * BUILD_UP_BELOW) {
+    video.playbackRate = BUILD_UP_RATE;
+    return;
+  }
+  video.playbackRate = 1;
 }
 
 export class FlvViewTransport implements ViewTransport {
@@ -142,6 +184,7 @@ export class FlvViewTransport implements ViewTransport {
   constructor(
     private readonly signaling: SignalingClient,
     private readonly deliveryPath: string,
+    private readonly targetS: number = DEFAULT_BALANCED_TARGET_S,
   ) {}
 
   onEnded(cb: () => void): void {
@@ -158,14 +201,14 @@ export class FlvViewTransport implements ViewTransport {
 
     // Bound to this attempt's lifetime. The player hands every candidate route
     // the SAME element, so listeners left behind by a route that failed keep
-    // firing over the route that succeeded — and an orphaned chaseLiveEdge does
-    // not just report, it SEEKS, yanking a healthy HLS playback around on behalf
-    // of a dead FLV attempt. stop() aborts them.
+    // firing over the route that succeeded — and an orphaned syncLiveEdge does
+    // not just report, it SEEKS and changes playback speed, yanking a healthy
+    // HLS playback around on behalf of a dead FLV attempt. stop() aborts them.
     this.listeners = new AbortController();
     const { signal } = this.listeners;
     video.addEventListener("ended", () => this.endedCb?.(), { signal });
     video.addEventListener("waiting", () => this.bufferingCb?.(), { signal });
-    video.addEventListener("timeupdate", () => chaseLiveEdge(video), { signal });
+    video.addEventListener("timeupdate", () => syncLiveEdge(video, this.targetS), { signal });
 
     let mod: FlvModule;
     try {
@@ -243,6 +286,10 @@ export class FlvViewTransport implements ViewTransport {
     this.listeners = null;
     this.teardownPlayer();
     if (this.video) {
+      // Hand the element back at normal speed. syncLiveEdge may have left it
+      // running slightly fast or slow, and the next route to use this element
+      // would inherit that with no idea where it came from.
+      this.video.playbackRate = 1;
       this.video.removeAttribute("src");
       this.video.load();
     }

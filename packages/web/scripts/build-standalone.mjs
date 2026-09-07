@@ -7,7 +7,12 @@
  * can use it with just a <script> tag.
  */
 import { build } from "esbuild";
-import { mkdirSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync } from "node:fs";
+
+// Same injection tsup.config.ts does. Without it this bundle reports "web/dev"
+// as its version — and the standalone file is exactly the one used by projects
+// that have no build step to tell us anything else about themselves.
+const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
 mkdirSync("standalone", { recursive: true });
 
@@ -23,6 +28,7 @@ const common = {
   target: "es2017",
   legalComments: "none",
   banner,
+  define: { __MEBIUS_SDK_VERSION__: JSON.stringify(version) },
 };
 
 await build({ ...common, outfile: "standalone/mebius.js", minify: false, sourcemap: false });

@@ -1,5 +1,21 @@
 # @mebius-io/react-native
 
+## 0.7.0
+
+### Minor Changes
+
+- Keep a session alive past its token, and stop trading smoothness for latency nobody asked for.
+
+  **`getToken` — sessions that outlive one token.** A connection used to live exactly as long as the token it was opened with: the gateway checks that token on every media request, so playback stopped at expiry no matter how healthy the stream was. Fine for a short watch, wrong for anything unattended. Pass `getToken` to `Mebius.connect` (or `useMebius`) and Mebius mints ahead of expiry, retrying with backoff while the old token is still valid, and emits `token-refreshed`. Without it, behaviour is unchanged.
+
+  Refreshing reaches the segmented route too, which is the half a token swap cannot do on its own: that route hands one URL to the media library and never speaks to it again, so requests are re-stamped with the current token as they are made. Only an existing token parameter is replaced, never added — an edge-served URL carries the edge's own signature and must not receive ours.
+
+  **`targetLatencyMs` — buy a steady picture with a little delay.** Video that has arrived but is not yet shown is what absorbs an unsteady network: a late or re-sent piece still lands before its turn and the viewer sees nothing. With no cushion the same event freezes the picture, and the freeze is not brief — video resumes only at the next complete frame, a second or two later. Small buffers therefore produce long stalls, not small ones. Defaults to ~300ms on the real-time route (conversation still feels immediate); set 1500-3000 for watching. Honoured by whichever route serves the viewer, so a failover cannot silently change the trade.
+
+  The buffered route no longer corrects drift by jumping the playhead. It jumped to 0.4s behind the newest data whenever the buffer grew past 2s — destroying the cushion every time it recovered, and the jump was a visible stutter of its own. Drift is now corrected by playing 2-5% fast or slow, inaudibly, and a jump is reserved for a gap speed could not close.
+
+  **Playback statistics that measure what viewers feel.** A frozen real-time picture reports a healthy connection and raises no event on the video element, so every freeze on that route was recorded as zero — sessions looked flawless over a still frame. That route now measures its own freezes, and reports round-trip time, packet loss and the delay actually being lived with, each as the difference between readings rather than a running total. Inbound bitrate is now the bitrate actually received; it previously reported estimated available bandwidth.
+
 ## 0.6.2
 
 ### Patch Changes

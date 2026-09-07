@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { chaseLiveEdge, FlvViewTransport } from "./balanced-view-transport.js";
+import { syncLiveEdge, FlvViewTransport, DEFAULT_BALANCED_TARGET_S } from "./balanced-view-transport.js";
 import type { SignalingClient } from "./signaling.js";
 
-/** A video element with just the surface chaseLiveEdge touches. */
+/** A video element with just the surface syncLiveEdge touches. */
 function video(currentTime: number, bufferedEnd: number | null): HTMLVideoElement {
   return {
     currentTime,
+    playbackRate: 1,
     buffered:
       bufferedEnd === null
         ? { length: 0, end: () => 0 }
@@ -13,23 +14,56 @@ function video(currentTime: number, bufferedEnd: number | null): HTMLVideoElemen
   } as unknown as HTMLVideoElement;
 }
 
-describe("chaseLiveEdge", () => {
-  it("skips forward when playback has drifted behind the live edge", () => {
-    const v = video(10, 20);
-    chaseLiveEdge(v);
-    // Near the edge, but not on it: landing exactly on the edge starves instantly.
-    expect(v.currentTime).toBeCloseTo(19.6);
+// The cushion of arrived-but-unshown video is what absorbs an unsteady network.
+// The previous policy threw it away every time it recovered — and did so with a
+// seek, which was a visible stutter of its own. These pin down that it is now
+// held, and corrected by speed rather than by jumping.
+describe("syncLiveEdge", () => {
+  const T = DEFAULT_BALANCED_TARGET_S;
+
+  it("leaves the picture alone when the cushion is about right", () => {
+    const v = video(20 - T, 20);
+    syncLiveEdge(v);
+    expect(v.currentTime).toBe(20 - T);
+    expect(v.playbackRate).toBe(1);
   });
 
-  it("leaves a small gap alone — the skip would be worse than the delay", () => {
-    const v = video(19, 20);
-    chaseLiveEdge(v);
-    expect(v.currentTime).toBe(19);
+  it("plays slightly fast when it has drifted behind, without jumping", () => {
+    const before = 20 - T * 2;
+    const v = video(before, 20);
+    syncLiveEdge(v);
+    expect(v.currentTime).toBe(before); // no seek — that was the old stutter
+    expect(v.playbackRate).toBeGreaterThan(1);
+    expect(v.playbackRate).toBeLessThanOrEqual(1.1); // above this the pitch is audible
+  });
+
+  it("plays slightly slow to rebuild a cushion that is too thin", () => {
+    const v = video(19.9, 20); // hard against the live edge, nothing in reserve
+    syncLiveEdge(v);
+    expect(v.currentTime).toBe(19.9);
+    expect(v.playbackRate).toBeLessThan(1);
+    expect(v.playbackRate).toBeGreaterThanOrEqual(0.95);
+  });
+
+  it("jumps only when speed alone would take minutes to close the gap", () => {
+    const v = video(0, 60);
+    syncLiveEdge(v);
+    expect(v.currentTime).toBeCloseTo(60 - T);
+    expect(v.playbackRate).toBe(1);
+  });
+
+  it("honours an explicit target", () => {
+    const v = video(15, 20); // 5s of cushion
+    syncLiveEdge(v, 5);
+    expect(v.playbackRate).toBe(1); // on target for this caller
+    const tight = video(17, 20); // 3s of cushion
+    syncLiveEdge(tight, 1); // far too much for this caller: catch up
+    expect(tight.playbackRate).toBeGreaterThan(1);
   });
 
   it("does nothing with an empty buffer", () => {
     const v = video(0, null);
-    chaseLiveEdge(v);
+    syncLiveEdge(v);
     expect(v.currentTime).toBe(0);
   });
 });

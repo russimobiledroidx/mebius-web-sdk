@@ -11,6 +11,13 @@ export type ClientEventMap = {
   connected: void;
   disconnected: { reason?: string };
   error: MebiusError;
+  /**
+   * A fresh access token was fetched and is now in use. Purely informational —
+   * playback and publishing continue uninterrupted; nothing needs to be done in
+   * response. Useful for logging that an unattended long-running session is
+   * still renewing itself.
+   */
+  "token-refreshed": void;
 };
 
 /** Event payloads emitted by a broadcaster. */

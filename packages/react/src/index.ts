@@ -42,6 +42,16 @@ export interface UseMebiusOptions {
   beaconUrl?: string;
   /** Your own id for the person on this connection, if you want it in reports. */
   userId?: string;
+  /**
+   * Mint a fresh token when the current one nears expiry. Give this to any view
+   * that must outlive one token — a stream left running overnight, a lobby
+   * screen — and Mebius renews itself instead of stopping at expiry.
+   *
+   * Deliberately NOT a dependency of the connection: an inline arrow changes
+   * identity on every render, and treating that as a change would reconnect the
+   * player on every render. The latest one you pass is always the one called.
+   */
+  getToken?: () => string | Promise<string>;
 }
 
 export interface UseMebiusResult {
@@ -59,16 +69,26 @@ export function useMebius({
   beaconToken,
   beaconUrl,
   userId,
+  getToken,
 }: UseMebiusOptions): UseMebiusResult {
   const [client, setClient] = useState<MebiusClient | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<MebiusError | null>(null);
+  const getTokenRef = useRef(getToken);
+  getTokenRef.current = getToken;
 
   useEffect(() => {
     if (!token) return;
     Mebius.init({ appId, gateway });
     setStatus("connecting");
-    const c = Mebius.connect({ token, deliveries, beaconToken, beaconUrl, userId });
+    const c = Mebius.connect({
+      token,
+      deliveries,
+      beaconToken,
+      beaconUrl,
+      userId,
+      getToken: getTokenRef.current ? () => getTokenRef.current!() : undefined,
+    });
     const offConnected = c.on("connected", () => setStatus("connected"));
     const offError = c.on("error", (e) => {
       setError(e);
