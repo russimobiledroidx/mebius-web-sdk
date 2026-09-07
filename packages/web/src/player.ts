@@ -72,7 +72,12 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     private readonly userId?: string,
   ) {
     super();
-    this.candidates = createViewCandidates(options.mode ?? "auto", signaling, deliveries);
+    this.candidates = createViewCandidates(
+      options.mode ?? "auto",
+      signaling,
+      deliveries,
+      options.targetLatencyMs,
+    );
   }
 
   /** Start playing `streamId` into the given video element or selector. */
@@ -249,17 +254,27 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
       // Freeze time is reported even when the transport has no stats to give:
       // a route too stalled to produce statistics is precisely the one whose
       // freezes matter most.
-      const freezeMs = this.freeze.take();
+      const elementFreezeMs = this.freeze.take();
       if (!stats) {
-        if (freezeMs > 0) this.reporter?.add({ ts: Math.floor(Date.now() / 1000), freezeMs });
+        if (elementFreezeMs > 0) {
+          this.reporter?.add({ ts: Math.floor(Date.now() / 1000), freezeMs: elementFreezeMs });
+        }
         return;
       }
       this.emit("stats", stats);
+      // Two sources, added rather than chosen between, because they see
+      // different things and never the same one twice. The element reports the
+      // stalls it raises events for; a real-time route raises none — it can sit
+      // frozen for seconds while the connection reports perfect health — so it
+      // measures its own and reports it here. Whichever route is serving, one of
+      // the two is zero.
       this.reporter?.add({
         ts: Math.floor(Date.now() / 1000),
         bitrateKbps: stats.bitrateKbps,
         fps: stats.framesPerSecond,
-        freezeMs,
+        rttMs: stats.rttMs,
+        packetLossPct: stats.packetLossPct,
+        freezeMs: elementFreezeMs + (stats.freezeMs ?? 0),
       });
     }, STATS_INTERVAL_MS);
   }

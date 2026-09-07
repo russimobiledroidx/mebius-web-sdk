@@ -35,6 +35,53 @@ export function retryWarmupNotFound(
   return retry || (retryCount < (cfg?.maxNumRetry ?? 0) && res?.code === 404);
 }
 
+/** Matches a `token=` query parameter and captures its `?`/`&` prefix. */
+const TOKEN_PARAM = /([?&]token=)[^&#]*/;
+
+/**
+ * Re-stamp a URL with the current access token. Exported for its test only.
+ *
+ * REPLACES an existing `token` parameter, never adds one. That rule is what
+ * makes this safe on a delivery route: the gateway redirects those to an edge
+ * whose URLs carry the edge's own signature and no `token` of ours, and
+ * appending one there would hand our access token to a host we did not choose.
+ */
+export function withCurrentToken(url: string, token: string): string {
+  return url.replace(TOKEN_PARAM, (_match, prefix: string) => prefix + encodeURIComponent(token));
+}
+
+/**
+ * A loader that re-stamps every request with the token the session holds RIGHT
+ * NOW, rather than the one it held when playback started.
+ *
+ * This is the half of token refresh that the signaling client cannot do. Scale
+ * playback hands one playlist URL to the media library and then never speaks to
+ * it again: the library re-fetches that playlist every few seconds and pulls
+ * segments off it for as long as the viewer watches. Swapping the session token
+ * therefore changes nothing on this route — every one of those requests still
+ * carries the original token, and they all start failing the moment it expires.
+ * Rewriting at load time is the only point where a long watch can pick up a new
+ * credential without tearing the player down and re-buffering.
+ */
+function tokenRestampingLoader(
+  Hls: HlsModule["default"],
+  currentToken: () => string,
+): HlsConfigLoader {
+  const Base = Hls.DefaultConfig.loader as unknown as LoaderCtor;
+  return class TokenRestampingLoader extends Base {
+    override load(context: { url: string }, config: unknown, callbacks: unknown): void {
+      context.url = withCurrentToken(context.url, currentToken());
+      super.load(context, config, callbacks);
+    }
+  } as unknown as HlsConfigLoader;
+}
+
+/** Structural shape of the media library's loader, kept local to this file. */
+type LoaderCtor = new (config: unknown) => {
+  load(context: { url: string }, config: unknown, callbacks: unknown): void;
+};
+type HlsConfigLoader = import("hls.js").HlsConfig["loader"];
+
 export class HlsViewTransport implements ViewTransport {
   readonly kind = "hls" as const;
 
@@ -54,6 +101,7 @@ export class HlsViewTransport implements ViewTransport {
   constructor(
     private readonly signaling: SignalingClient,
     private readonly deliveryPath?: string,
+    private readonly targetS?: number,
   ) {}
 
   onEnded(cb: () => void): void {
@@ -100,6 +148,10 @@ export class HlsViewTransport implements ViewTransport {
       if (!video.canPlayType("application/vnd.apple.mpegurl")) {
         throw mebiusError("CONNECTION_FAILED", "Scale playback is not supported in this browser.");
       }
+      // Native playback takes the URL once and re-fetches the playlist itself,
+      // with no hook to re-stamp it — so a token refresh cannot reach this path.
+      // A session here lives as long as its token, which is why the gateway-side
+      // credential lifetime still matters for browsers that land on it.
       video.src = url;
       this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
       return;
@@ -131,6 +183,11 @@ export class HlsViewTransport implements ViewTransport {
     // See retryWarmupNotFound for why the predicate is mandatory, not decoration.
     const hls = new Hls({
       maxLiveSyncPlaybackRate: 1.1,
+      loader: tokenRestampingLoader(Hls, () => this.signaling.accessToken()),
+      // Only when the app actually asked. Left alone, the library follows the
+      // playlist's own HOLD-BACK, which the server measured from the segments it
+      // is producing — a number guessed here would only override a real one.
+      ...(this.targetS === undefined ? {} : { liveSyncDuration: this.targetS }),
       manifestLoadPolicy: {
         default: {
           maxTimeToFirstByteMs: 10_000,

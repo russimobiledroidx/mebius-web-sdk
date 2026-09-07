@@ -19,7 +19,15 @@
  * 0.4.7), so the dashboard attributed every session to a version that was not
  * the one running — the first thing you check when a release regresses.
  */
-const SDK_VERSION = "web/0.4.8";
+declare const __MEBIUS_SDK_VERSION__: string | undefined;
+
+/**
+ * Which SDK produced a sample. Replaced at build time from package.json; the
+ * fallback is for test and source runs that never pass through the bundler,
+ * where a version number would be a guess anyway.
+ */
+const SDK_VERSION =
+  typeof __MEBIUS_SDK_VERSION__ === "string" ? `web/${__MEBIUS_SDK_VERSION__}` : "web/dev";
 
 /** How often a batch is sent. Long enough to batch, short enough to survive a tab close. */
 const FLUSH_INTERVAL_MS = 15_000;

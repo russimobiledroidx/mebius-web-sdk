@@ -39,8 +39,25 @@ export interface SessionResult {
 export class SignalingClient {
   constructor(
     private readonly gateway: string,
-    private readonly token: string,
+    private token: string,
   ) {}
+
+  /**
+   * Swap in a freshly-minted access token.
+   *
+   * Every URL this class builds is built at call time, so a session that starts
+   * a new request after this point uses the new token with no further wiring.
+   * What it does NOT reach is a request already in flight or a media URL another
+   * library has memorised — see the scale route's loader for that half.
+   */
+  setToken(token: string): void {
+    this.token = token;
+  }
+
+  /** The current access token, for transports that must re-stamp their own URLs. */
+  accessToken(): string {
+    return this.token;
+  }
 
   private base(): string {
     return this.gateway.replace(/\/+$/, "");

@@ -3,7 +3,9 @@
 (() => {
   var __create = Object.create;
   var __defProp = Object.defineProperty;
+  var __defProps = Object.defineProperties;
   var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropDescs = Object.getOwnPropertyDescriptors;
   var __getOwnPropNames = Object.getOwnPropertyNames;
   var __getOwnPropSymbols = Object.getOwnPropertySymbols;
   var __getProtoOf = Object.getPrototypeOf;
@@ -21,6 +23,7 @@
       }
     return a;
   };
+  var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
   var __esm = (fn, res) => function __init() {
     return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
   };
@@ -42851,10 +42854,21 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
 
   // src/internal/ll-view-transport.ts
+  var DEFAULT_REALTIME_TARGET_MS = 300;
+  function holdBuffer(receiver, targetMs) {
+    const r = receiver;
+    try {
+      if ("jitterBufferTarget" in r) r.jitterBufferTarget = targetMs;
+      if ("playoutDelayHint" in r) r.playoutDelayHint = targetMs / 1e3;
+    } catch (e) {
+    }
+  }
   var WhepViewTransport = class {
-    constructor(signaling) {
+    constructor(signaling, targetLatencyMs = DEFAULT_REALTIME_TARGET_MS) {
       this.signaling = signaling;
+      this.targetLatencyMs = targetLatencyMs;
       this.kind = "whep";
+      this.cursor = null;
       this.pc = null;
       this.resourceUrl = null;
       this.endedCb = null;
@@ -42879,6 +42893,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       pc.addTransceiver("video", { direction: "recvonly" });
       pc.addTransceiver("audio", { direction: "recvonly" });
       pc.ontrack = (ev) => {
+        holdBuffer(ev.receiver, this.targetLatencyMs);
         remote.addTrack(ev.track);
         video.srcObject = remote;
         void playWithAutoplayFallback(video).then((o) => {
@@ -42908,6 +42923,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
     async stop() {
       var _a;
+      this.cursor = null;
       await this.signaling.deleteResource(this.resourceUrl);
       this.resourceUrl = null;
       (_a = this.pc) == null ? void 0 : _a.close();
@@ -42915,24 +42931,59 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       if (this.video) resetVideoElement(this.video);
       this.video = null;
     }
+    /**
+     * Read what the connection actually did since the last reading.
+     *
+     * This route needs to measure its own freezes, because nothing else can. A
+     * frozen real-time picture still reports a healthy connection and raises no
+     * event on the video element — so from the outside the session looks flawless
+     * while the viewer stares at a still frame. Every freeze on this route used to
+     * be recorded as zero, which is why the problem could be felt and never seen.
+     */
     async getStats() {
       if (!this.pc) return null;
       const report = await this.pc.getStats();
-      let bitrateKbps = 0;
-      let framesPerSecond = 0;
-      let latencyMs;
+      let framesPerSecond;
+      let freezeS = 0;
+      let packetsLost = 0;
+      let packetsReceived = 0;
+      let bytesReceived = 0;
+      let bufferDelayS = 0;
+      let bufferEmitted = 0;
+      let rttMs;
       report.forEach((stat) => {
-        if (stat.type === "inbound-rtp") {
-          if (typeof stat.framesPerSecond === "number") framesPerSecond = stat.framesPerSecond;
-          if (typeof stat.jitter === "number") latencyMs = Math.round(stat.jitter * 1e3);
+        if (stat.type === "inbound-rtp" && stat.kind === "video") {
+          const v = stat;
+          if (typeof v.framesPerSecond === "number") framesPerSecond = v.framesPerSecond;
+          if (typeof v.totalFreezesDuration === "number") freezeS = v.totalFreezesDuration;
+          if (typeof v.packetsLost === "number") packetsLost = v.packetsLost;
+          if (typeof v.packetsReceived === "number") packetsReceived = v.packetsReceived;
+          if (typeof v.bytesReceived === "number") bytesReceived = v.bytesReceived;
+          if (typeof v.jitterBufferDelay === "number") bufferDelayS = v.jitterBufferDelay;
+          if (typeof v.jitterBufferEmittedCount === "number") bufferEmitted = v.jitterBufferEmittedCount;
         }
         if (stat.type === "candidate-pair" && stat.state === "succeeded") {
-          if (typeof stat.availableIncomingBitrate === "number") {
-            bitrateKbps = Math.round(stat.availableIncomingBitrate / 1e3);
-          }
+          const p = stat;
+          if (typeof p.currentRoundTripTime === "number") rttMs = Math.round(p.currentRoundTripTime * 1e3);
         }
       });
-      return { bitrateKbps, framesPerSecond, latencyMs };
+      const atMs = Date.now();
+      const previous = this.cursor;
+      this.cursor = { atMs, freezeS, packetsLost, packetsReceived, bytesReceived, bufferDelayS, bufferEmitted };
+      if (!previous) return { framesPerSecond, rttMs };
+      const elapsedS = Math.max(1e-3, (atMs - previous.atMs) / 1e3);
+      const deltaLost = Math.max(0, packetsLost - previous.packetsLost);
+      const deltaReceived = Math.max(0, packetsReceived - previous.packetsReceived);
+      const deltaEmitted = bufferEmitted - previous.bufferEmitted;
+      const heldMs = deltaEmitted > 0 ? (bufferDelayS - previous.bufferDelayS) / deltaEmitted * 1e3 : void 0;
+      return {
+        bitrateKbps: Math.round((bytesReceived - previous.bytesReceived) * 8 / elapsedS / 1e3),
+        framesPerSecond,
+        latencyMs: heldMs === void 0 ? void 0 : Math.round(heldMs + (rttMs !== void 0 ? rttMs / 2 : 0)),
+        rttMs,
+        packetLossPct: deltaLost + deltaReceived > 0 ? Number((deltaLost / (deltaLost + deltaReceived) * 100).toFixed(2)) : 0,
+        freezeMs: Math.max(0, Math.round((freezeS - previous.freezeS) * 1e3))
+      };
     }
   };
 
@@ -42941,6 +42992,19 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     var _a;
     return retry || retryCount < ((_a = cfg == null ? void 0 : cfg.maxNumRetry) != null ? _a : 0) && (res == null ? void 0 : res.code) === 404;
   }
+  var TOKEN_PARAM = /([?&]token=)[^&#]*/;
+  function withCurrentToken(url, token) {
+    return url.replace(TOKEN_PARAM, (_match, prefix) => prefix + encodeURIComponent(token));
+  }
+  function tokenRestampingLoader(Hls2, currentToken) {
+    const Base = Hls2.DefaultConfig.loader;
+    return class TokenRestampingLoader extends Base {
+      load(context, config2, callbacks) {
+        context.url = withCurrentToken(context.url, currentToken());
+        super.load(context, config2, callbacks);
+      }
+    };
+  }
   var HlsViewTransport = class {
     /**
      * deliveryPath, when given, is a gateway-relative path from the gateway's own
@@ -42948,9 +43012,10 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      * origin one. Without it this falls back to the origin playlist, which is
      * still correct, just served from our own bandwidth.
      */
-    constructor(signaling, deliveryPath) {
+    constructor(signaling, deliveryPath, targetS) {
       this.signaling = signaling;
       this.deliveryPath = deliveryPath;
+      this.targetS = targetS;
       this.kind = "hls";
       this.hls = null;
       this.video = null;
@@ -42994,8 +43059,10 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
         return;
       }
-      const hls = new Hls2({
+      const hls = new Hls2(__spreadProps(__spreadValues({
         maxLiveSyncPlaybackRate: 1.1,
+        loader: tokenRestampingLoader(Hls2, () => this.signaling.accessToken())
+      }, this.targetS === void 0 ? {} : { liveSyncDuration: this.targetS }), {
         manifestLoadPolicy: {
           default: {
             maxTimeToFirstByteMs: 1e4,
@@ -43009,7 +43076,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
             }
           }
         }
-      });
+      }));
       this.hls = hls;
       hls.on(Hls2.Events.ERROR, (_evt, data) => {
         var _a;
@@ -43069,8 +43136,12 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     autoCleanupMinBackwardDuration: 10,
     reuseRedirectedURL: true
   };
-  var MAX_DRIFT_S = 2;
-  var EDGE_MARGIN_S = 0.4;
+  var DEFAULT_BALANCED_TARGET_S = 2;
+  var CATCH_UP_RATE = 1.05;
+  var BUILD_UP_RATE = 0.98;
+  var SEEK_AT = 4;
+  var CATCH_UP_ABOVE = 1.5;
+  var BUILD_UP_BELOW = 0.9;
   var AUDIO_RETRY_MS = 2500;
   var UPSTREAM_LATENCY_MS = 800;
   function stalledWithData(video, ms) {
@@ -43088,17 +43159,31 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       video.addEventListener("timeupdate", onTime);
     });
   }
-  function chaseLiveEdge(video) {
+  function syncLiveEdge(video, targetS = DEFAULT_BALANCED_TARGET_S) {
     const ranges = video.buffered;
     if (ranges.length === 0) return;
     const edge = ranges.end(ranges.length - 1);
-    if (edge - video.currentTime <= MAX_DRIFT_S) return;
-    video.currentTime = edge - EDGE_MARGIN_S;
+    const drift = edge - video.currentTime;
+    if (drift > targetS * SEEK_AT) {
+      video.currentTime = edge - targetS;
+      video.playbackRate = 1;
+      return;
+    }
+    if (drift > targetS * CATCH_UP_ABOVE) {
+      video.playbackRate = CATCH_UP_RATE;
+      return;
+    }
+    if (drift < targetS * BUILD_UP_BELOW) {
+      video.playbackRate = BUILD_UP_RATE;
+      return;
+    }
+    video.playbackRate = 1;
   }
   var FlvViewTransport = class {
-    constructor(signaling, deliveryPath) {
+    constructor(signaling, deliveryPath, targetS = DEFAULT_BALANCED_TARGET_S) {
       this.signaling = signaling;
       this.deliveryPath = deliveryPath;
+      this.targetS = targetS;
       this.kind = "flv_js";
       this.player = null;
       this.video = null;
@@ -43130,7 +43215,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         var _a;
         return (_a = this.bufferingCb) == null ? void 0 : _a.call(this);
       }, { signal });
-      video.addEventListener("timeupdate", () => chaseLiveEdge(video), { signal });
+      video.addEventListener("timeupdate", () => syncLiveEdge(video, this.targetS), { signal });
       let mod;
       try {
         mod = await Promise.resolve().then(() => __toESM(require_flv(), 1));
@@ -43179,6 +43264,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.listeners = null;
       this.teardownPlayer();
       if (this.video) {
+        this.video.playbackRate = 1;
         this.video.removeAttribute("src");
         this.video.load();
       }
@@ -43246,18 +43332,29 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   function canPlayBuffered() {
     return typeof MediaSource !== "undefined";
   }
-  function transportFor(kind, path, signaling) {
-    if (kind === KIND_FAST) return canPlayBuffered() ? new FlvViewTransport(signaling, path) : null;
-    if (kind === KIND_WIDE || kind === KIND_LOCAL) return new HlsViewTransport(signaling, path);
+  function transportFor(kind, path, signaling, targetLatencyMs) {
+    const targetS = targetLatencyMs === void 0 ? void 0 : targetLatencyMs / 1e3;
+    if (kind === KIND_FAST)
+      return canPlayBuffered() ? new FlvViewTransport(signaling, path, targetS) : null;
+    if (kind === KIND_WIDE || kind === KIND_LOCAL)
+      return new HlsViewTransport(signaling, path, targetS);
     return null;
   }
-  function createViewCandidates(mode, signaling, deliveries = []) {
-    const fromGateway = (kinds) => deliveries.filter((d) => kinds.includes(d.kind)).map((d) => transportFor(d.kind, d.path, signaling)).filter((t) => t !== null);
-    const originFallback = new HlsViewTransport(signaling);
+  function createViewCandidates(mode, signaling, deliveries = [], targetLatencyMs) {
+    const fromGateway = (kinds) => deliveries.filter((d) => kinds.includes(d.kind)).map((d) => transportFor(d.kind, d.path, signaling, targetLatencyMs)).filter((t) => t !== null);
+    const originFallback = new HlsViewTransport(
+      signaling,
+      void 0,
+      targetLatencyMs === void 0 ? void 0 : targetLatencyMs / 1e3
+    );
     const allKinds = [KIND_FAST, KIND_WIDE, KIND_LOCAL];
     switch (mode) {
       case "low-latency":
-        return [new WhepViewTransport(signaling), ...fromGateway(allKinds), originFallback];
+        return [
+          new WhepViewTransport(signaling, targetLatencyMs != null ? targetLatencyMs : DEFAULT_REALTIME_TARGET_MS),
+          ...fromGateway(allKinds),
+          originFallback
+        ];
       case "balanced":
         return [...fromGateway(allKinds), originFallback];
       case "scale":
@@ -43268,7 +43365,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
 
   // src/internal/telemetry.ts
-  var SDK_VERSION = "web/0.4.8";
+  var SDK_VERSION = true ? `web/${"0.7.0"}` : "web/dev";
   var FLUSH_INTERVAL_MS = 15e3;
   var MAX_BATCH = 64;
   function describeDevice() {
@@ -43686,7 +43783,12 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.freeze = new FreezeClock();
       /** Cancels element listeners bound for the lifetime of one play(). */
       this.elementListeners = null;
-      this.candidates = createViewCandidates((_a = options.mode) != null ? _a : "auto", signaling, deliveries);
+      this.candidates = createViewCandidates(
+        (_a = options.mode) != null ? _a : "auto",
+        signaling,
+        deliveries,
+        options.targetLatencyMs
+      );
     }
     /** Start playing `streamId` into the given video element or selector. */
     async play(streamId, viewTarget) {
@@ -43818,19 +43920,23 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
     startStats() {
       this.statsTimer = setInterval(async () => {
-        var _a, _b, _c;
+        var _a, _b, _c, _d;
         const stats = await ((_a = this.transport) == null ? void 0 : _a.getStats());
-        const freezeMs = this.freeze.take();
+        const elementFreezeMs = this.freeze.take();
         if (!stats) {
-          if (freezeMs > 0) (_b = this.reporter) == null ? void 0 : _b.add({ ts: Math.floor(Date.now() / 1e3), freezeMs });
+          if (elementFreezeMs > 0) {
+            (_b = this.reporter) == null ? void 0 : _b.add({ ts: Math.floor(Date.now() / 1e3), freezeMs: elementFreezeMs });
+          }
           return;
         }
         this.emit("stats", stats);
-        (_c = this.reporter) == null ? void 0 : _c.add({
+        (_d = this.reporter) == null ? void 0 : _d.add({
           ts: Math.floor(Date.now() / 1e3),
           bitrateKbps: stats.bitrateKbps,
           fps: stats.framesPerSecond,
-          freezeMs
+          rttMs: stats.rttMs,
+          packetLossPct: stats.packetLossPct,
+          freezeMs: elementFreezeMs + ((_c = stats.freezeMs) != null ? _c : 0)
         });
       }, STATS_INTERVAL_MS2);
     }
@@ -43860,6 +43966,21 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     constructor(gateway, token) {
       this.gateway = gateway;
       this.token = token;
+    }
+    /**
+     * Swap in a freshly-minted access token.
+     *
+     * Every URL this class builds is built at call time, so a session that starts
+     * a new request after this point uses the new token with no further wiring.
+     * What it does NOT reach is a request already in flight or a media URL another
+     * library has memorised — see the scale route's loader for that half.
+     */
+    setToken(token) {
+      this.token = token;
+    }
+    /** The current access token, for transports that must re-stamp their own URLs. */
+    accessToken() {
+      return this.token;
     }
     base() {
       return this.gateway.replace(/\/+$/, "");
@@ -43982,16 +44103,21 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
 
   // src/client.ts
+  var REFRESH_MARGIN_MS = 6e4;
+  var REFRESH_RETRY_BASE_MS = 2e3;
+  var REFRESH_RETRY_MAX_MS = 3e4;
   var MebiusClient = class extends TypedEmitter {
     /** @internal */
-    constructor(config2, token, deliveries = [], telemetry = null, userId) {
+    constructor(config2, token, deliveries = [], telemetry = null, userId, getToken) {
       super();
       this.token = token;
       this.deliveries = deliveries;
       this.telemetry = telemetry;
       this.userId = userId;
+      this.getToken = getToken;
       this.expiryTimer = null;
       this.connected = false;
+      this.refreshFailures = 0;
       this.signaling = new SignalingClient(config2.gateway, token);
     }
     /** @internal Called by {@link Mebius.connect}. */
@@ -44003,13 +44129,82 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         return;
       }
       this.connected = true;
-      if (expiresAtMs !== null) {
+      this.scheduleTokenWork(expiresAtMs);
+      queueMicrotask(() => this.emit("connected", void 0));
+    }
+    /**
+     * Arm whatever has to happen as this token approaches its expiry: renew it if
+     * the app gave us a way to, otherwise report that the session is over.
+     *
+     * Renewing is what makes an unattended session possible at all. The gateway
+     * checks the token on every media request, so without a fresh one playback
+     * stops the moment it expires — no matter how healthy the stream is.
+     */
+    scheduleTokenWork(expiresAtMs) {
+      this.clearTimer();
+      if (expiresAtMs === null) return;
+      const remaining = expiresAtMs - Date.now();
+      if (!this.getToken) {
         this.expiryTimer = setTimeout(
           () => this.emit("error", mebiusError("TOKEN_EXPIRED")),
-          Math.max(0, expiresAtMs - now2)
+          Math.max(0, remaining)
         );
+        return;
       }
-      queueMicrotask(() => this.emit("connected", void 0));
+      this.expiryTimer = setTimeout(
+        () => void this.refreshToken(expiresAtMs),
+        Math.max(0, remaining - REFRESH_MARGIN_MS)
+      );
+    }
+    async refreshToken(previousExpiryMs) {
+      if (!this.connected || !this.getToken) return;
+      let next;
+      try {
+        next = await this.getToken();
+      } catch (cause) {
+        this.onRefreshFailed(previousExpiryMs, cause);
+        return;
+      }
+      if (!this.connected) return;
+      const { expiresAtMs } = readToken(next);
+      if (expiresAtMs !== null && expiresAtMs <= previousExpiryMs) {
+        this.emit(
+          "error",
+          mebiusError("TOKEN_EXPIRED", "Mebius token refresh returned a token that is not newer.")
+        );
+        return;
+      }
+      this.refreshFailures = 0;
+      this.token = next;
+      this.signaling.setToken(next);
+      this.emit("token-refreshed", void 0);
+      this.scheduleTokenWork(expiresAtMs);
+    }
+    /**
+     * A failed refresh is not a dead session: the current token is still valid
+     * until `expiryMs`, and the viewer is still watching. Retry inside that window
+     * and only report expiry once it has actually run out.
+     */
+    onRefreshFailed(expiryMs, cause) {
+      const remaining = expiryMs - Date.now();
+      if (remaining <= 0) {
+        this.emit("error", mebiusError("TOKEN_EXPIRED", void 0, cause));
+        return;
+      }
+      this.refreshFailures += 1;
+      const backoff = Math.min(
+        REFRESH_RETRY_MAX_MS,
+        REFRESH_RETRY_BASE_MS * 2 ** (this.refreshFailures - 1)
+      );
+      this.clearTimer();
+      this.expiryTimer = setTimeout(
+        () => void this.refreshToken(expiryMs),
+        Math.min(backoff, remaining)
+      );
+    }
+    clearTimer() {
+      if (this.expiryTimer) clearTimeout(this.expiryTimer);
+      this.expiryTimer = null;
     }
     /** Create a broadcaster bound to this connection. */
     createBroadcaster(options = {}) {
@@ -44054,8 +44249,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
     /** Close the connection and release resources. */
     disconnect(reason) {
-      if (this.expiryTimer) clearTimeout(this.expiryTimer);
-      this.expiryTimer = null;
+      this.clearTimer();
       this.connected = false;
       this.emit("disconnected", { reason });
       this.removeAllListeners();
@@ -44085,7 +44279,14 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       }
       if (!options.token) throw mebiusError("UNKNOWN", "Mebius.connect requires a token.");
       const telemetry = options.beaconToken && options.beaconUrl ? { token: options.beaconToken, url: options.beaconUrl } : null;
-      const client = new MebiusClient(config, options.token, (_a = options.deliveries) != null ? _a : [], telemetry, options.userId);
+      const client = new MebiusClient(
+        config,
+        options.token,
+        (_a = options.deliveries) != null ? _a : [],
+        telemetry,
+        options.userId,
+        options.getToken
+      );
       client.open();
       return client;
     },

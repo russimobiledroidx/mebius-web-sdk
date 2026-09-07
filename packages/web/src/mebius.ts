@@ -33,7 +33,14 @@ export const Mebius = {
       options.beaconToken && options.beaconUrl
         ? { token: options.beaconToken, url: options.beaconUrl }
         : null;
-    const client = new MebiusClient(config, options.token, options.deliveries ?? [], telemetry, options.userId);
+    const client = new MebiusClient(
+      config,
+      options.token,
+      options.deliveries ?? [],
+      telemetry,
+      options.userId,
+      options.getToken,
+    );
     client.open();
     return client;
   },

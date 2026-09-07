@@ -65,6 +65,63 @@ function Watch({ token, streamId }: { token: string; streamId: string }) {
 }
 ```
 
+### Sesi yang harus hidup lebih lama dari satu token
+
+Token itu short-lived, dan gateway memeriksanya di setiap request media — jadi
+tanpa perpanjangan, tontonan berhenti tepat saat token habis. Untuk apa pun yang
+ditinggal jalan (siaran 24/7, layar lobi, monitor yang menyala semalaman),
+berikan `getToken`: Mebius mint ulang sebelum kedaluwarsa dan sesi lanjut terus
+tanpa buffering atau player dibangun ulang.
+
+```ts
+const client = Mebius.connect({
+  token,
+  deliveries,
+  // Dipanggil sendiri menjelang kedaluwarsa. Endpoint yang sama dengan di atas.
+  getToken: async () =>
+    (await fetch("/api/mebius-token?streamId=my-stream&role=viewer").then((r) => r.json())).token,
+});
+
+client.on("token-refreshed", () => console.log("sesi diperpanjang"));
+```
+
+Kalau panggilannya gagal, Mebius mengulang dengan backoff selama token lama
+masih berlaku — gangguan backend sesaat tidak merugikan penonton. `TOKEN_EXPIRED`
+baru muncul kalau token benar-benar habis. Tanpa `getToken`, perilakunya seperti
+sebelumnya: `TOKEN_EXPIRED` saat kedaluwarsa, aplikasi yang menyambung ulang.
+
+Di React, oper lewat `useMebius({ ..., getToken })`. Fungsinya sengaja bukan
+dependency koneksi, jadi arrow inline tidak memicu reconnect tiap render.
+
+### Patah-patah: tukar sedikit delay dengan gambar yang stabil
+
+Video yang sudah sampai tapi belum ditampilkan adalah bantalan yang menyerap
+jaringan tidak stabil. Potongan yang telat atau harus dikirim ulang masih keburu
+tiba sebelum gilirannya, dan penonton tidak melihat apa-apa. Tanpa bantalan,
+kejadian yang sama membekukan gambar — dan bekunya tidak sebentar, karena video
+baru bisa lanjut di frame utuh berikutnya, biasanya 1–2 detik kemudian.
+
+Jadi bantalan kecil tidak menghasilkan glitch kecil; dia menghasilkan freeze
+beberapa detik. Kalau penonton mengeluh "patah-patah", ini yang pertama disetel:
+
+```ts
+const player = client.createPlayer({
+  // Menonton: share screen, presentasi, siaran panjang. Bayar 1,5 detik yang
+  // tidak ada yang sadar, hilangkan freeze yang semua orang sadar.
+  targetLatencyMs: 1500,
+});
+
+// Interaktif (co-host, PK battle) biarkan default — sekitar 300ms.
+const monitor = client.createMonitor();
+```
+
+Berlaku untuk rute mana pun yang melayani penonton, jadi pilihan itu tetap
+dipegang walau Mebius berpindah rute di tengah jalan.
+
+Sisi streamer, satu setelan di luar SDK yang dampaknya besar: **turunkan
+keyframe interval OBS dari 2 detik ke 1 detik**. Itu memotong separuh durasi
+freeze terburuk untuk semua penonton. Ongkosnya bitrate naik ~5–10%.
+
 Dokumentasi lengkap per package: **[`@mebius-io/web`](packages/web/README.md)** ·
 [`@mebius-io/react`](packages/react/README.md) ·
 [`@mebius-io/react-native`](packages/react-native/README.md).
@@ -80,6 +137,8 @@ Dokumentasi lengkap per package: **[`@mebius-io/web`](packages/web/README.md)** 
 - **Broadcast + watch** dari satu API yang konsisten lintas platform.
 - **Aman by design** — app secret tetap di backend; client hanya menerima token
   short-lived per-stream.
+- **Sesi tanpa batas waktu** — oper `getToken` dan Mebius memperpanjang
+  kredensialnya sendiri; tontonan berjalan berhari-hari tanpa perlu disentuh.
 - **Type-safe** — TypeScript penuh, ESM + CJS + UMD, tree-shakeable.
 
 ## Packages
