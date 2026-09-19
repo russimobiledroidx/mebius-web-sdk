@@ -99,12 +99,16 @@ export class MebiusClient extends TypedEmitter<ClientEventMap> {
 
     const { expiresAtMs } = readToken(next);
     if (expiresAtMs !== null && expiresAtMs <= previousExpiryMs) {
-      // A provider handing back the same token (a cached response, a backend
-      // that re-serves one credential) would put us in a hot refresh loop that
-      // still ends in expiry. Say so once instead of spinning until the tab dies.
-      this.emit(
-        "error",
-        mebiusError("TOKEN_EXPIRED", "Mebius token refresh returned a token that is not newer."),
+      // A token that does not outlive the one it replaces cannot keep the session
+      // alive — so it is a failed mint, and is handled as one rather than as the
+      // end of the session. That distinction matters: a backend briefly serving a
+      // cached response would otherwise kill a stream a full REFRESH_MARGIN_MS
+      // before its credential actually expired, which is worse than not having
+      // refresh at all. Retrying inside the remaining window still ends in one
+      // TOKEN_EXPIRED if the provider never produces a newer token.
+      this.onRefreshFailed(
+        previousExpiryMs,
+        new Error("Mebius token refresh returned a token that is not newer."),
       );
       return;
     }

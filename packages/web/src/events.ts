@@ -1,5 +1,5 @@
 import type { MebiusError } from "./errors.js";
-import type { BroadcastStats, CaptionSegment, PlaybackStats } from "./types.js";
+import type { BroadcastStats, CaptionSegment, MebiusQuality, PlaybackStats } from "./types.js";
 
 // NOTE: these are `type` aliases (not interfaces) so they satisfy the
 // `Record<string, unknown>` constraint on TypedEmitter — TS only treats object
@@ -33,6 +33,12 @@ export type PlayerEventMap = {
   buffering: void;
   ended: void;
   stats: PlaybackStats;
+  /**
+   * The selectable renditions changed, because the player moved to a different
+   * delivery route. Fires once per accepted route, carrying the list as it now
+   * stands — today always empty, since no route offers a ladder.
+   */
+  "qualities-changed": readonly MebiusQuality[];
 };
 
 /** Event payloads emitted by {@link MebiusCaptions}. */
@@ -70,11 +76,29 @@ export class TypedEmitter<EventMap extends Record<string, unknown>> {
     this.listeners.get(event)?.delete(cb as Listener<unknown>);
   }
 
-  /** Emit an event to all listeners. Internal use. */
+  /**
+   * Emit an event to all listeners. Internal use.
+   *
+   * Each listener is isolated. A subscriber that throws is the subscriber's bug,
+   * and letting it escape makes it ours: emits happen on the SDK's own hot paths,
+   * so an exception from, say, a quality-menu handler used to unwind into the
+   * route-acceptance try/catch and tear down a stream that was playing perfectly
+   * — reported as a connection failure, with the real cause nowhere in sight. It
+   * also let one bad listener starve every listener after it.
+   *
+   * Reported rather than swallowed: console is the only channel available here,
+   * since raising an `error` event from inside an emit invites a loop.
+   */
   protected emit<K extends keyof EventMap>(event: K, payload: EventMap[K]): void {
     const set = this.listeners.get(event);
     if (!set) return;
-    for (const cb of [...set]) (cb as Listener<EventMap[K]>)(payload);
+    for (const cb of [...set]) {
+      try {
+        (cb as Listener<EventMap[K]>)(payload);
+      } catch (cause) {
+        console.error(`[mebius] listener for "${String(event)}" threw`, cause);
+      }
+    }
   }
 
   /** Remove every listener. Internal use during teardown. */
