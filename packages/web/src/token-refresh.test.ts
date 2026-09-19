@@ -95,9 +95,12 @@ describe("session token refresh", () => {
     expect(errors).toEqual(["TOKEN_EXPIRED"]);
   });
 
-  // A provider re-serving one cached credential would otherwise spin: refresh,
-  // see the same expiry, schedule immediately, refresh again, forever.
-  it("refuses to loop on a provider that returns a token no newer than the last", async () => {
+  // A provider re-serving one cached credential must not spin (refresh, see the
+  // same expiry, reschedule immediately, forever) — but it must not end the
+  // session early either. A token that is not newer is a FAILED mint: retried
+  // under backoff while the current credential is still valid, reported once it
+  // genuinely is not.
+  it("retries a provider returning a token no newer than the last, then reports once", async () => {
     const stale = tokenExpiringIn(HOUR_S);
     let calls = 0;
     const client = Mebius.connect({
@@ -110,9 +113,34 @@ describe("session token refresh", () => {
     const errors: string[] = [];
     client.on("error", (e) => errors.push(e.code));
 
+    // Refresh is due a minute before expiry. Through that last minute the old
+    // token is still perfectly good, so killing the session here would be worse
+    // than having no refresh at all.
+    await vi.advanceTimersByTimeAsync((HOUR_S - 30) * 1000);
+    expect(errors, "reported expiry while the old token was still valid").toEqual([]);
+    expect(calls).toBeGreaterThan(0);
+
+    // Past the real expiry: said once, not in a loop.
     await vi.advanceTimersByTimeAsync(HOUR_S * 1000);
-    expect(calls).toBe(1);
     expect(errors).toEqual(["TOKEN_EXPIRED"]);
+  });
+
+  // A listener that throws is the app's bug. It must not become ours: emits run
+  // on the SDK's own hot paths, and an exception escaping one used to unwind into
+  // route acceptance and tear down a stream that was playing fine.
+  it("isolates a listener that throws from the rest of the session", async () => {
+    const client = Mebius.connect({
+      token: tokenExpiringIn(HOUR_S),
+      getToken: () => tokenExpiringIn(HOUR_S * 3),
+    });
+    const seen: string[] = [];
+    client.on("token-refreshed", () => {
+      throw new Error("listener bug");
+    });
+    client.on("token-refreshed", () => seen.push("second listener still ran"));
+
+    await vi.advanceTimersByTimeAsync(HOUR_S * 1000);
+    expect(seen).toEqual(["second listener still ran"]);
   });
 });
 

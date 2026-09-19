@@ -278,6 +278,8 @@ tidak membawa bundle mode lain.
 | `MebiusPlayer` | `play(streamId, viewTarget)` | `Promise<void>` | `viewTarget`: `<video>` atau selector. |
 | `MebiusPlayer` | `stop()` | `Promise<void>` | |
 | `MebiusPlayer` | `setVolume(0..1)` | `void` | |
+| `MebiusPlayer` | `qualities` | `MebiusQuality[]` | Rendition yang benar-benar bisa dipilih. `[]` = satu rendition, sembunyikan menu kualitas. |
+| `MebiusPlayer` | `setQuality("auto" \| id)` | `Promise<void>` | Tolak id di luar `qualities`; playback tidak terganggu. |
 
 ### Events
 
@@ -293,6 +295,7 @@ tidak membawa bundle mode lain.
 | player | `buffering` | — |
 | player | `ended` | — |
 | player | `stats` | `{ bitrateKbps, framesPerSecond, latencyMs? }` |
+| player | `qualities-changed` | `MebiusQuality[]` | terbit sekali tiap rute playback diterima |
 
 ```ts
 client.on("connected", () => {});

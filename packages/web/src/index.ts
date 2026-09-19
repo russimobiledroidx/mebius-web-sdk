@@ -29,6 +29,7 @@ export type {
   MediaConstraint,
   BroadcastStats,
   PlaybackStats,
+  MebiusQuality,
   CaptionsOptions,
   CaptionSegment,
   MebiusErrorCode,

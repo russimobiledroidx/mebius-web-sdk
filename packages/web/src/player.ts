@@ -6,7 +6,7 @@ import { createViewCandidates, type ViewTransport } from "./internal/transport.j
 import { QoeReporter, type TelemetryTarget } from "./internal/telemetry.js";
 import { resetVideoElement } from "./internal/autoplay.js";
 import { FreezeClock } from "./internal/freeze-clock.js";
-import type { MebiusDelivery, PlayerOptions, ViewTarget } from "./types.js";
+import type { MebiusDelivery, MebiusQuality, PlayerOptions, ViewTarget } from "./types.js";
 
 const STATS_INTERVAL_MS = 2000;
 
@@ -62,6 +62,8 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
   private readonly freeze = new FreezeClock();
   /** Cancels element listeners bound for the lifetime of one play(). */
   private elementListeners: AbortController | null = null;
+  /** Renditions the active route actually offers. See {@link qualities}. */
+  private renditions: readonly MebiusQuality[] = Object.freeze([]);
 
   /** @internal */
   constructor(
@@ -130,6 +132,9 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
         if (await hasFirstFrame(video)) {
           this.transport = candidate;
           this.playing = true;
+          // Routes may differ in what they can offer, so the list is published per
+          // accepted route rather than once per player.
+          this.publishQualities();
           if (this.telemetry) {
             this.reporter = new QoeReporter(
               this.telemetry,
@@ -209,6 +214,47 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
   }
 
   /**
+   * Renditions this stream can actually be switched between.
+   *
+   * Empty means there is exactly one rendition — or a route with no such concept —
+   * and a UI should HIDE its quality menu rather than offer a choice that does not
+   * exist. That is the whole reason this exists: a player built against an HLS
+   * ladder has a menu, and without a programmatic answer the only options were to
+   * show a fake one or to delete the feature on a hunch.
+   *
+   * It is empty for every Mebius stream today: the engine publishes one rendition
+   * and does no ladder transcoding. The field is here so a client can be written
+   * once, against the honest answer, and keep working unchanged if that ever
+   * changes.
+   *
+   * The list is per ROUTE, so it is re-read on failover and announced with
+   * `qualities-changed`.
+   */
+  get qualities(): readonly MebiusQuality[] {
+    return this.renditions;
+  }
+
+  /**
+   * Choose a rendition, or `"auto"` to let Mebius decide (the default).
+   *
+   * Rejects an id that is not in {@link qualities} instead of silently doing
+   * nothing — a UI that asks for a rendition and gets no error would otherwise
+   * show the wrong state forever. Rejecting does not touch playback: the stream
+   * keeps running on whatever it is running on.
+   */
+  async setQuality(id: "auto" | string): Promise<void> {
+    if (id !== "auto" && !this.renditions.some((q) => q.id === id)) {
+      throw mebiusError(
+        "UNKNOWN",
+        `Unknown quality "${id}". Pass "auto", or an id from player.qualities.`,
+      );
+    }
+    // With one rendition there is nothing to switch to, so an accepted call is a
+    // no-op. No state is kept for it: an unread "selected id" would be a second
+    // source of truth to keep in step with the route, for no reader.
+  }
+
+  /**
    * Wall-clock time (Unix ms) currently on screen, or `null` when the active
    * route cannot produce one. A real-time route carries no wall clock at all,
    * and a segmented route has none until its first timestamped segment arrives
@@ -222,6 +268,22 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
    */
   currentEpochMs(): number | null {
     return this.transport?.playheadEpochMs?.() ?? null;
+  }
+
+  /**
+   * Re-read the renditions for the route now serving and tell listeners.
+   *
+   * Emitted unconditionally on route acceptance, not only when the list differs:
+   * "the route changed, here is what it offers" is the fact a client acts on, and
+   * suppressing an identical list would make the event fire or not depending on
+   * which route happened to win.
+   */
+  private publishQualities(): void {
+    // No Mebius route exposes a ladder — the engine publishes a single rendition
+    // (`hlsVariant: lowLatency`, no ABR). Empty is the truthful answer, and this is
+    // the one place that has to change if that stops being true.
+    this.renditions = Object.freeze([]);
+    this.emit("qualities-changed", this.renditions);
   }
 
   private attach(transport: ViewTransport): void {

@@ -193,6 +193,25 @@ export interface PlaybackStats {
   freezeMs?: number;
 }
 
+/**
+ * One selectable rendition of a stream.
+ *
+ * Mebius does not transcode into a ladder today, so a live stream has exactly one
+ * rendition and {@link MebiusPlayer.qualities} is empty. That emptiness is the
+ * signal, not an omission: a player UI can hide its quality menu because the list
+ * says there is nothing to choose, rather than because someone guessed.
+ */
+export interface MebiusQuality {
+  /** Stable id to pass to {@link MebiusPlayer.setQuality}. */
+  id: string;
+  /** Human-readable label, e.g. `"720p"`. Safe to show as-is. */
+  label: string;
+  /** Frame height in pixels, when the rendition has a fixed one. */
+  height?: number;
+  /** Nominal video bitrate in kbps, when known. */
+  bitrateKbps?: number;
+}
+
 /** Options for {@link MebiusClient.createCaptions}. */
 export interface CaptionsOptions {
   /**
