@@ -26,7 +26,8 @@ const FIRST_FRAME_TIMEOUT_MS = 8000;
  * How long a stall is allowed to last before the route is treated as dead.
  *
  * A route that stops delivering does not announce it. flv.js reports a network
- * error as one more `waiting`, an HLS edge that restarts simply stops answering,
+ * error as one more `waiting`, a segmented edge that restarts simply stops
+ * answering,
  * and the element sits on its last decoded frame — which is what a viewer calls
  * a black screen. Nothing downstream can tell that apart from a slow segment, so
  * the only usable signal is how long the picture has not moved.
@@ -311,9 +312,9 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
    *
    * Empty means there is exactly one rendition — or a route with no such concept —
    * and a UI should HIDE its quality menu rather than offer a choice that does not
-   * exist. That is the whole reason this exists: a player built against an HLS
-   * ladder has a menu, and without a programmatic answer the only options were to
-   * show a fake one or to delete the feature on a hunch.
+   * exist. That is the whole reason this exists: a player built against a
+   * rendition ladder has a menu, and without a programmatic answer the only
+   * options were to show a fake one or to delete the feature on a hunch.
    *
    * It is empty for every Mebius stream today: the engine publishes one rendition
    * and does no ladder transcoding. The field is here so a client can be written

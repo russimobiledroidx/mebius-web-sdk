@@ -43953,9 +43953,9 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      *
      * Empty means there is exactly one rendition — or a route with no such concept —
      * and a UI should HIDE its quality menu rather than offer a choice that does not
-     * exist. That is the whole reason this exists: a player built against an HLS
-     * ladder has a menu, and without a programmatic answer the only options were to
-     * show a fake one or to delete the feature on a hunch.
+     * exist. That is the whole reason this exists: a player built against a
+     * rendition ladder has a menu, and without a programmatic answer the only
+     * options were to show a fake one or to delete the feature on a hunch.
      *
      * It is empty for every Mebius stream today: the engine publishes one rendition
      * and does no ladder transcoding. The field is here so a client can be written
