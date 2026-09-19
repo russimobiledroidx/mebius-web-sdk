@@ -23,6 +23,45 @@ const STATS_INTERVAL_MS = 2000;
 const FIRST_FRAME_TIMEOUT_MS = 8000;
 
 /**
+ * How long a stall is allowed to last before the route is treated as dead.
+ *
+ * A route that stops delivering does not announce it. flv.js reports a network
+ * error as one more `waiting`, an HLS edge that restarts simply stops answering,
+ * and the element sits on its last decoded frame — which is what a viewer calls
+ * a black screen. Nothing downstream can tell that apart from a slow segment, so
+ * the only usable signal is how long the picture has not moved.
+ *
+ * 10s is deliberately longer than the 8s first-frame budget: a route that is
+ * merely slow deserves to finish, and reopening a healthy stream costs the
+ * viewer a rebuffer.
+ */
+const STALL_RECOVERY_MS = 10_000;
+
+/**
+ * How many times a lost route is reopened before the session is declared over.
+ *
+ * The SDK cannot tell "the broadcast ended" from "the edge dropped us": both
+ * look like a route that stopped producing frames. So it assumes the recoverable
+ * case, which is the common one on a long broadcast, and spends a bounded amount
+ * of time proving itself wrong. Five attempts with the backoff below is about
+ * half a minute of waiting plus one route walk per attempt — long enough to ride
+ * out an edge restart or a publisher reconnect, short enough that a viewer
+ * watching a stream that really ended is not left staring at a spinner.
+ */
+const MAX_RECOVERY_ATTEMPTS = 5;
+
+/** First delay before reopening; doubles per attempt up to RECOVERY_MAX_MS. */
+const RECOVERY_BASE_MS = 1000;
+
+/**
+ * Ceiling on the reopen delay. Bounded because every viewer of one broadcast
+ * fails at the same instant — an edge restart is not an individual event — and
+ * an unbounded retry storm from a full room is how a recovery mechanism becomes
+ * the outage.
+ */
+const RECOVERY_MAX_MS = 30_000;
+
+/**
  * Which player currently drives a given element.
  *
  * A second player on the same element is an ordinary thing for an app to do —
@@ -64,6 +103,20 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
   private elementListeners: AbortController | null = null;
   /** Renditions the active route actually offers. See {@link qualities}. */
   private renditions: readonly MebiusQuality[] = Object.freeze([]);
+  /** The stream being played, so a lost route can be reopened without the caller. */
+  private streamId: string | null = null;
+  /** True while reopening a lost route; keeps recovery and play() off each other. */
+  private recovering = false;
+  /** Consecutive reopen attempts without playback in between. Reset on `playing`. */
+  private recoveryAttempts = 0;
+  /** Counts down a stall towards recovery; cancelled the moment the picture moves. */
+  private stallTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Bumped by stop(). A recovery loop that started before the caller stopped us
+   * must not reopen a route into an element the app has moved on from, and it
+   * can be several seconds inside a backoff when that happens.
+   */
+  private session = 0;
 
   /** @internal */
   constructor(
@@ -84,7 +137,11 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
 
   /** Start playing `streamId` into the given video element or selector. */
   async play(streamId: string, viewTarget: ViewTarget): Promise<void> {
-    if (this.playing) return;
+    // `recovering` counts as playing for this guard: recovery sets `playing`
+    // false while it reopens, and without this an app that calls play() on its
+    // own `buffering` handler would open a second route into the same element
+    // and race the one already coming back.
+    if (this.playing || this.recovering) return;
     const video = resolveVideoElement(viewTarget);
     // One element, one player. Whatever was driving it is finished, and stopping
     // it here is what keeps a second play() from leaving a live transport
@@ -104,6 +161,12 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     video.addEventListener(
       "playing",
       () => {
+        // The picture moved, so whatever stall was counting down towards a
+        // reopen is over, and the route has proven itself again: the recovery
+        // budget resets here rather than on route acceptance, because accepting
+        // a route only means it opened, not that it is delivering.
+        this.clearStallTimer();
+        this.recoveryAttempts = 0;
         if (!this.stalled || !this.playing) return;
         this.stalled = false;
         this.freeze.endStall();
@@ -112,6 +175,34 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
       { signal: this.elementListeners.signal },
     );
 
+    this.streamId = streamId;
+    const failure = await this.openRoute(streamId, video);
+    if (failure === null) return;
+
+    // Release the element before giving up. Holding ownership of an element we
+    // are not playing into would make the next player await a stop() on this
+    // dead one, and would keep this player object alive through the map for as
+    // long as the element exists.
+    this.elementListeners?.abort();
+    this.elementListeners = null;
+    if (ELEMENT_OWNER.get(video) === this) ELEMENT_OWNER.delete(video);
+    this.video = null;
+    throw failure;
+  }
+
+  /**
+   * Try every candidate route in order and keep the first one that delivers.
+   *
+   * Separated from play() because it runs twice for two different reasons: once
+   * to start, and again whenever a route that WAS delivering stops (see
+   * {@link recover}). Reopening has to walk the same list in the same order —
+   * the route that died is often not the best one still standing — and the only
+   * difference is that the second caller does not own the element setup.
+   *
+   * Returns `null` when a route was accepted, or the error to report when none
+   * of them produced a picture.
+   */
+  private async openRoute(streamId: string, video: HTMLVideoElement): Promise<unknown | null> {
     // Measured across route attempts, not from the accepted route: a viewer who
     // waited through a dead edge waited, and reporting only the winning route's
     // time would hide exactly the delay worth knowing about.
@@ -150,8 +241,14 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
             this.reporter.add({ ts: Math.floor(Date.now() / 1000), firstFrameMs: Date.now() - startedAtMs });
           }
           this.startStats();
+          // Proven delivering — hasFirstFrame only resolves once the picture
+          // moved — so the budget starts over here as well as on the element's
+          // own `playing`. The budget is for CONSECUTIVE failures, and relying
+          // on a DOM event alone would let a long broadcast that loses its route
+          // once an hour run out of attempts by the afternoon.
+          this.recoveryAttempts = 0;
           this.emit("playing", { streamId });
-          return;
+          return null;
         }
         lastError = mebiusError("CONNECTION_FAILED", "A Mebius route delivered no video.");
       } catch (cause) {
@@ -162,20 +259,16 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
       // the next route then renders into a element that is not free.
       await candidate.stop().catch(() => undefined);
     }
-
-    // Release the element before giving up. Holding ownership of an element we
-    // are not playing into would make the next player await a stop() on this
-    // dead one, and would keep this player object alive through the map for as
-    // long as the element exists.
-    this.elementListeners?.abort();
-    this.elementListeners = null;
-    if (ELEMENT_OWNER.get(video) === this) ELEMENT_OWNER.delete(video);
-    this.video = null;
-    throw lastError ?? mebiusError("CONNECTION_FAILED", "No Mebius route could play this stream.");
+    return lastError ?? mebiusError("CONNECTION_FAILED", "No Mebius route could play this stream.");
   }
 
   /** Stop playback and detach from the video element. */
   async stop(): Promise<void> {
+    // Retires a recovery that may be sitting in a backoff right now; it checks
+    // this on the way out of every await.
+    this.session += 1;
+    this.recoveryAttempts = 0;
+    this.clearStallTimer();
     this.elementListeners?.abort();
     this.elementListeners = null;
     if (this.video && ELEMENT_OWNER.get(this.video) === this) {
@@ -291,13 +384,13 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
       // Only the route currently serving may end playback. A route we already
       // abandoned firing late must not close a stream that is playing fine.
       if (this.transport !== transport) return;
-      this.playing = false;
-      this.stopStats();
-      // A stream ending is a session ending: flush now or the watch time since the
-      // last batch is never counted.
-      void this.reporter?.stop();
-      this.reporter = null;
-      this.emit("ended", undefined);
+      // Not necessarily the end of the broadcast. A segmented route reports the
+      // end of what IT can serve — the publisher reconnected, the edge recycled
+      // the session, the playlist went away for a moment — and on a broadcast
+      // that runs for days that happens long before the host stops. So this is
+      // treated as a lost route and proven to be an ending, rather than assumed
+      // to be one; `ended` is emitted from recover() once reopening has failed.
+      void this.recover();
     });
     transport.onBuffering(() => {
       if (this.transport !== transport) return;
@@ -306,8 +399,122 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
       // resetting the start each time would report a fraction of the freeze.
       this.freeze.beginStall();
       this.stalled = true;
+      // A stall that never ends is the black screen this whole mechanism exists
+      // for, and it arrives as a `waiting` that is simply never followed by a
+      // `playing`. Arm the countdown on the first one and let the element cancel
+      // it; re-arming on every repeat would push the deadline out forever,
+      // because flv.js keeps firing them while the picture stays frozen.
+      if (!this.stallTimer) {
+        this.stallTimer = setTimeout(() => {
+          this.stallTimer = null;
+          void this.recover();
+        }, STALL_RECOVERY_MS);
+      }
       this.emit("buffering", undefined);
     });
+  }
+
+  /**
+   * Releases whatever route is attached, without touching the element or the
+   * session. A method rather than four inline lines because recovery needs it in
+   * two places, and one of them runs after the other has already nulled the
+   * fields — which TypeScript reads as "these can only be null now".
+   */
+  private async releaseRoute(): Promise<void> {
+    this.stopStats();
+    await this.reporter?.stop();
+    this.reporter = null;
+    await this.transport?.stop().catch(() => undefined);
+    this.transport = null;
+    this.playing = false;
+  }
+
+  private clearStallTimer(): void {
+    if (this.stallTimer) clearTimeout(this.stallTimer);
+    this.stallTimer = null;
+  }
+
+  /**
+   * Reopen the stream after the serving route stopped delivering.
+   *
+   * This is the difference between a broadcast a viewer can leave running and
+   * one that has to be reloaded by hand. Route selection used to happen exactly
+   * once, at play(): the first route that produced a frame was kept for the rest
+   * of the session, and if it later died — a CDN edge restarting, a publisher
+   * reconnecting, a laptop's network dropping for a second — the element simply
+   * held its last decoded frame. The SDK reported `buffering` and then nothing
+   * at all. On a 90-minute match that was rare enough to look like bad luck; on
+   * a channel that runs for a day it is a certainty, and the viewer's word for
+   * it is "black screen".
+   *
+   * The reopen walks the full candidate list again rather than retrying the dead
+   * route, because the common causes take out one route and not the others.
+   *
+   * The token needs no special handling: {@link MebiusClient} renews it on its
+   * own schedule whether or not anything is playing, and every transport stamps
+   * the CURRENT token when it builds its URL — so a route reopened after an hour
+   * of stalling gets today's credential, not the one it first connected with.
+   */
+  private async recover(): Promise<void> {
+    if (this.recovering) return;
+    const video = this.video;
+    const streamId = this.streamId;
+    if (!video || !streamId) return;
+
+    this.recovering = true;
+    const session = this.session;
+    this.clearStallTimer();
+    // Tell the UI before the first backoff, not after it. In the `ended` case
+    // nothing has reported a stall yet, and a spinner that appears a second
+    // later still beats a frozen frame with no explanation.
+    if (!this.stalled) {
+      this.freeze.beginStall();
+      this.stalled = true;
+      this.emit("buffering", undefined);
+    }
+
+    try {
+      while (this.session === session && this.recoveryAttempts < MAX_RECOVERY_ATTEMPTS) {
+        const wait = Math.min(RECOVERY_BASE_MS * 2 ** this.recoveryAttempts, RECOVERY_MAX_MS);
+        this.recoveryAttempts += 1;
+        await new Promise((r) => setTimeout(r, wait));
+        // stop() can land anywhere inside that wait, and reopening a route into
+        // an element the app has already moved on from is worse than not
+        // recovering at all.
+        if (this.session !== session) return;
+
+        await this.releaseRoute();
+
+        const failure = await this.openRoute(streamId, video);
+        if (this.session !== session) {
+          // stop() landed while the route was opening. openRoute may have just
+          // accepted one — transport attached, stats running, telemetry
+          // reporting — and stop() cannot have torn that down, because it ran
+          // when there was nothing yet to tear down. Leaving now would keep a
+          // stopped player playing.
+          await this.releaseRoute();
+          return;
+        }
+        if (failure === null) return;
+      }
+      if (this.session !== session) return;
+
+      // Every route refused for the whole budget. Either the broadcast really is
+      // over or the viewer's own connection is gone; both are the end of this
+      // session as far as anything downstream is concerned.
+      this.playing = false;
+      this.stopStats();
+      void this.reporter?.stop();
+      this.reporter = null;
+      // Closes the session to further recovery. Without it a late callback from
+      // the last dead route re-enters here with the budget already spent and
+      // emits a second `ended` — and an app that tears itself down on `ended`
+      // gets to do it twice.
+      this.streamId = null;
+      this.emit("ended", undefined);
+    } finally {
+      this.recovering = false;
+    }
   }
 
   private startStats(): void {
