@@ -42661,11 +42661,29 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       var _a;
       (_a = this.listeners.get(event)) == null ? void 0 : _a.delete(cb);
     }
-    /** Emit an event to all listeners. Internal use. */
+    /**
+     * Emit an event to all listeners. Internal use.
+     *
+     * Each listener is isolated. A subscriber that throws is the subscriber's bug,
+     * and letting it escape makes it ours: emits happen on the SDK's own hot paths,
+     * so an exception from, say, a quality-menu handler used to unwind into the
+     * route-acceptance try/catch and tear down a stream that was playing perfectly
+     * — reported as a connection failure, with the real cause nowhere in sight. It
+     * also let one bad listener starve every listener after it.
+     *
+     * Reported rather than swallowed: console is the only channel available here,
+     * since raising an `error` event from inside an emit invites a loop.
+     */
     emit(event, payload) {
       const set = this.listeners.get(event);
       if (!set) return;
-      for (const cb of [...set]) cb(payload);
+      for (const cb of [...set]) {
+        try {
+          cb(payload);
+        } catch (cause) {
+          console.error(`[mebius] listener for "${String(event)}" threw`, cause);
+        }
+      }
     }
     /** Remove every listener. Internal use during teardown. */
     removeAllListeners() {
@@ -43764,6 +43782,10 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   // src/player.ts
   var STATS_INTERVAL_MS2 = 2e3;
   var FIRST_FRAME_TIMEOUT_MS = 8e3;
+  var STALL_RECOVERY_MS = 1e4;
+  var MAX_RECOVERY_ATTEMPTS = 5;
+  var RECOVERY_BASE_MS = 1e3;
+  var RECOVERY_MAX_MS = 3e4;
   var ELEMENT_OWNER = /* @__PURE__ */ new WeakMap();
   var MebiusPlayer = class extends TypedEmitter {
     /** @internal */
@@ -43783,6 +43805,22 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.freeze = new FreezeClock();
       /** Cancels element listeners bound for the lifetime of one play(). */
       this.elementListeners = null;
+      /** Renditions the active route actually offers. See {@link qualities}. */
+      this.renditions = Object.freeze([]);
+      /** The stream being played, so a lost route can be reopened without the caller. */
+      this.streamId = null;
+      /** True while reopening a lost route; keeps recovery and play() off each other. */
+      this.recovering = false;
+      /** Consecutive reopen attempts without playback in between. Reset on `playing`. */
+      this.recoveryAttempts = 0;
+      /** Counts down a stall towards recovery; cancelled the moment the picture moves. */
+      this.stallTimer = null;
+      /**
+       * Bumped by stop(). A recovery loop that started before the caller stopped us
+       * must not reopen a route into an element the app has moved on from, and it
+       * can be several seconds inside a backoff when that happens.
+       */
+      this.session = 0;
       this.candidates = createViewCandidates(
         (_a = options.mode) != null ? _a : "auto",
         signaling,
@@ -43793,7 +43831,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     /** Start playing `streamId` into the given video element or selector. */
     async play(streamId, viewTarget) {
       var _a;
-      if (this.playing) return;
+      if (this.playing || this.recovering) return;
       const video = resolveVideoElement(viewTarget);
       const previous = ELEMENT_OWNER.get(video);
       if (previous && previous !== this) await previous.stop();
@@ -43803,6 +43841,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       video.addEventListener(
         "playing",
         () => {
+          this.clearStallTimer();
+          this.recoveryAttempts = 0;
           if (!this.stalled || !this.playing) return;
           this.stalled = false;
           this.freeze.endStall();
@@ -43810,6 +43850,28 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         },
         { signal: this.elementListeners.signal }
       );
+      this.streamId = streamId;
+      const failure = await this.openRoute(streamId, video);
+      if (failure === null) return;
+      (_a = this.elementListeners) == null ? void 0 : _a.abort();
+      this.elementListeners = null;
+      if (ELEMENT_OWNER.get(video) === this) ELEMENT_OWNER.delete(video);
+      this.video = null;
+      throw failure;
+    }
+    /**
+     * Try every candidate route in order and keep the first one that delivers.
+     *
+     * Separated from play() because it runs twice for two different reasons: once
+     * to start, and again whenever a route that WAS delivering stops (see
+     * {@link recover}). Reopening has to walk the same list in the same order —
+     * the route that died is often not the best one still standing — and the only
+     * difference is that the second caller does not own the element setup.
+     *
+     * Returns `null` when a route was accepted, or the error to report when none
+     * of them produced a picture.
+     */
+    async openRoute(streamId, video) {
       const startedAtMs = Date.now();
       let lastError = null;
       for (const candidate of this.candidates) {
@@ -43820,6 +43882,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
           if (await hasFirstFrame(video)) {
             this.transport = candidate;
             this.playing = true;
+            this.publishQualities();
             if (this.telemetry) {
               this.reporter = new QoeReporter(
                 this.telemetry,
@@ -43832,8 +43895,9 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
               this.reporter.add({ ts: Math.floor(Date.now() / 1e3), firstFrameMs: Date.now() - startedAtMs });
             }
             this.startStats();
+            this.recoveryAttempts = 0;
             this.emit("playing", { streamId });
-            return;
+            return null;
           }
           lastError = mebiusError("CONNECTION_FAILED", "A Mebius route delivered no video.");
         } catch (cause) {
@@ -43841,15 +43905,14 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         }
         await candidate.stop().catch(() => void 0);
       }
-      (_a = this.elementListeners) == null ? void 0 : _a.abort();
-      this.elementListeners = null;
-      if (ELEMENT_OWNER.get(video) === this) ELEMENT_OWNER.delete(video);
-      this.video = null;
-      throw lastError != null ? lastError : mebiusError("CONNECTION_FAILED", "No Mebius route could play this stream.");
+      return lastError != null ? lastError : mebiusError("CONNECTION_FAILED", "No Mebius route could play this stream.");
     }
     /** Stop playback and detach from the video element. */
     async stop() {
       var _a, _b, _c;
+      this.session += 1;
+      this.recoveryAttempts = 0;
+      this.clearStallTimer();
       (_a = this.elementListeners) == null ? void 0 : _a.abort();
       this.elementListeners = null;
       if (this.video && ELEMENT_OWNER.get(this.video) === this) {
@@ -43886,6 +43949,42 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.video.muted = v === 0;
     }
     /**
+     * Renditions this stream can actually be switched between.
+     *
+     * Empty means there is exactly one rendition — or a route with no such concept —
+     * and a UI should HIDE its quality menu rather than offer a choice that does not
+     * exist. That is the whole reason this exists: a player built against a
+     * rendition ladder has a menu, and without a programmatic answer the only
+     * options were to show a fake one or to delete the feature on a hunch.
+     *
+     * It is empty for every Mebius stream today: the engine publishes one rendition
+     * and does no ladder transcoding. The field is here so a client can be written
+     * once, against the honest answer, and keep working unchanged if that ever
+     * changes.
+     *
+     * The list is per ROUTE, so it is re-read on failover and announced with
+     * `qualities-changed`.
+     */
+    get qualities() {
+      return this.renditions;
+    }
+    /**
+     * Choose a rendition, or `"auto"` to let Mebius decide (the default).
+     *
+     * Rejects an id that is not in {@link qualities} instead of silently doing
+     * nothing — a UI that asks for a rendition and gets no error would otherwise
+     * show the wrong state forever. Rejecting does not touch playback: the stream
+     * keeps running on whatever it is running on.
+     */
+    async setQuality(id) {
+      if (id !== "auto" && !this.renditions.some((q) => q.id === id)) {
+        throw mebiusError(
+          "UNKNOWN",
+          `Unknown quality "${id}". Pass "auto", or an id from player.qualities.`
+        );
+      }
+    }
+    /**
      * Wall-clock time (Unix ms) currently on screen, or `null` when the active
      * route cannot produce one. A real-time route carries no wall clock at all,
      * and a segmented route has none until its first timestamped segment arrives
@@ -43901,22 +44000,114 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       var _a, _b, _c;
       return (_c = (_b = (_a = this.transport) == null ? void 0 : _a.playheadEpochMs) == null ? void 0 : _b.call(_a)) != null ? _c : null;
     }
+    /**
+     * Re-read the renditions for the route now serving and tell listeners.
+     *
+     * Emitted unconditionally on route acceptance, not only when the list differs:
+     * "the route changed, here is what it offers" is the fact a client acts on, and
+     * suppressing an identical list would make the event fire or not depending on
+     * which route happened to win.
+     */
+    publishQualities() {
+      this.renditions = Object.freeze([]);
+      this.emit("qualities-changed", this.renditions);
+    }
     attach(transport) {
       transport.onEnded(() => {
-        var _a;
         if (this.transport !== transport) return;
-        this.playing = false;
-        this.stopStats();
-        void ((_a = this.reporter) == null ? void 0 : _a.stop());
-        this.reporter = null;
-        this.emit("ended", void 0);
+        void this.recover();
       });
       transport.onBuffering(() => {
         if (this.transport !== transport) return;
         this.freeze.beginStall();
         this.stalled = true;
+        if (!this.stallTimer) {
+          this.stallTimer = setTimeout(() => {
+            this.stallTimer = null;
+            void this.recover();
+          }, STALL_RECOVERY_MS);
+        }
         this.emit("buffering", void 0);
       });
+    }
+    /**
+     * Releases whatever route is attached, without touching the element or the
+     * session. A method rather than four inline lines because recovery needs it in
+     * two places, and one of them runs after the other has already nulled the
+     * fields — which TypeScript reads as "these can only be null now".
+     */
+    async releaseRoute() {
+      var _a, _b;
+      this.stopStats();
+      await ((_a = this.reporter) == null ? void 0 : _a.stop());
+      this.reporter = null;
+      await ((_b = this.transport) == null ? void 0 : _b.stop().catch(() => void 0));
+      this.transport = null;
+      this.playing = false;
+    }
+    clearStallTimer() {
+      if (this.stallTimer) clearTimeout(this.stallTimer);
+      this.stallTimer = null;
+    }
+    /**
+     * Reopen the stream after the serving route stopped delivering.
+     *
+     * This is the difference between a broadcast a viewer can leave running and
+     * one that has to be reloaded by hand. Route selection used to happen exactly
+     * once, at play(): the first route that produced a frame was kept for the rest
+     * of the session, and if it later died — a CDN edge restarting, a publisher
+     * reconnecting, a laptop's network dropping for a second — the element simply
+     * held its last decoded frame. The SDK reported `buffering` and then nothing
+     * at all. On a 90-minute match that was rare enough to look like bad luck; on
+     * a channel that runs for a day it is a certainty, and the viewer's word for
+     * it is "black screen".
+     *
+     * The reopen walks the full candidate list again rather than retrying the dead
+     * route, because the common causes take out one route and not the others.
+     *
+     * The token needs no special handling: {@link MebiusClient} renews it on its
+     * own schedule whether or not anything is playing, and every transport stamps
+     * the CURRENT token when it builds its URL — so a route reopened after an hour
+     * of stalling gets today's credential, not the one it first connected with.
+     */
+    async recover() {
+      var _a;
+      if (this.recovering) return;
+      const video = this.video;
+      const streamId = this.streamId;
+      if (!video || !streamId) return;
+      this.recovering = true;
+      const session = this.session;
+      this.clearStallTimer();
+      if (!this.stalled) {
+        this.freeze.beginStall();
+        this.stalled = true;
+        this.emit("buffering", void 0);
+      }
+      try {
+        while (this.session === session && this.recoveryAttempts < MAX_RECOVERY_ATTEMPTS) {
+          const wait = Math.min(RECOVERY_BASE_MS * 2 ** this.recoveryAttempts, RECOVERY_MAX_MS);
+          this.recoveryAttempts += 1;
+          await new Promise((r) => setTimeout(r, wait));
+          if (this.session !== session) return;
+          await this.releaseRoute();
+          const failure = await this.openRoute(streamId, video);
+          if (this.session !== session) {
+            await this.releaseRoute();
+            return;
+          }
+          if (failure === null) return;
+        }
+        if (this.session !== session) return;
+        this.playing = false;
+        this.stopStats();
+        void ((_a = this.reporter) == null ? void 0 : _a.stop());
+        this.reporter = null;
+        this.streamId = null;
+        this.emit("ended", void 0);
+      } finally {
+        this.recovering = false;
+      }
     }
     startStats() {
       this.statsTimer = setInterval(async () => {
@@ -44168,9 +44359,9 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       if (!this.connected) return;
       const { expiresAtMs } = readToken(next);
       if (expiresAtMs !== null && expiresAtMs <= previousExpiryMs) {
-        this.emit(
-          "error",
-          mebiusError("TOKEN_EXPIRED", "Mebius token refresh returned a token that is not newer.")
+        this.onRefreshFailed(
+          previousExpiryMs,
+          new Error("Mebius token refresh returned a token that is not newer.")
         );
         return;
       }

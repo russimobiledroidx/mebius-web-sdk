@@ -123,6 +123,14 @@ player.setVolume(0.8);
 await player.stop();
 ```
 
+Mebius picks the delivery route and keeps watching it. A route that stops
+delivering — an edge restarting, the publisher reconnecting, a second of lost
+network — is reopened by the player itself: it emits `buffering`, walks the
+route list again, and emits `playing` once a route is serving. Only after five
+bounded attempts does it give up and emit `ended`. So an app does not need its
+own restart loop for a long watch; handle `buffering`/`playing` for the spinner
+and `ended` for the end.
+
 ### Mode playback
 
 | Mode | Kapan dipakai |
