@@ -43413,7 +43413,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
 
   // src/internal/telemetry.ts
-  var SDK_VERSION = true ? `web/${"0.8.0"}` : "web/dev";
+  var SDK_VERSION = true ? `web/${"0.9.0"}` : "web/dev";
   var FLUSH_INTERVAL_MS = 15e3;
   var MAX_BATCH = 64;
   function describeDevice() {
