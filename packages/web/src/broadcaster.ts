@@ -30,7 +30,7 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
     private readonly userId?: string,
   ) {
     super();
-    this.transport = createPublishTransport(signaling);
+    this.transport = createPublishTransport(signaling, options.maxBitrateKbps);
   }
 
   /** Begin broadcasting under the given stream id. */

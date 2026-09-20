@@ -42743,13 +42743,42 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       }
     }
   }
+  var DEFAULT_MAX_BITRATE_KBPS = 3500;
   var WhipPublishTransport = class {
-    constructor(signaling) {
+    constructor(signaling, maxBitrateKbps = DEFAULT_MAX_BITRATE_KBPS) {
       this.signaling = signaling;
+      this.maxBitrateKbps = maxBitrateKbps;
       this.pc = null;
       this.resourceUrl = null;
       /** Bytes sent and packet counters at the previous getStats() call. */
       this.lastOutbound = null;
+    }
+    /**
+     * Caps the video encoder on the sender, which is the only place the ceiling is
+     * real — see BroadcasterOptions.maxBitrateKbps.
+     *
+     * Best effort. A browser that refuses the parameters publishes uncapped rather
+     * than failing to go live: an unbudgeted broadcast beats no broadcast, and the
+     * stats report the truth either way.
+     */
+    async applyBitrateCap() {
+      var _a, _b;
+      if (!this.maxBitrateKbps || this.maxBitrateKbps <= 0) return;
+      const sender = (_a = this.pc) == null ? void 0 : _a.getSenders().find((s) => {
+        var _a2;
+        return ((_a2 = s.track) == null ? void 0 : _a2.kind) === "video";
+      });
+      if (!sender) return;
+      try {
+        const params = sender.getParameters();
+        params.encodings = ((_b = params.encodings) == null ? void 0 : _b.length) ? params.encodings : [{}];
+        for (const encoding of params.encodings) {
+          encoding.maxBitrate = this.maxBitrateKbps * 1e3;
+        }
+        await sender.setParameters(params);
+      } catch (cause) {
+        console.warn("[mebius] could not cap the publish bitrate", cause);
+      }
     }
     async start(streamId, stream) {
       var _a;
@@ -42759,6 +42788,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         pc.addTrack(track, stream);
       }
       preferH264(pc);
+      await this.applyBitrateCap();
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await waitForIceGathering(pc);
@@ -43341,8 +43371,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   };
 
   // src/internal/transport.ts
-  function createPublishTransport(signaling) {
-    return new WhipPublishTransport(signaling);
+  function createPublishTransport(signaling, maxBitrateKbps) {
+    return new WhipPublishTransport(signaling, maxBitrateKbps);
   }
   var KIND_FAST = "fast";
   var KIND_WIDE = "wide";
@@ -43481,7 +43511,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.statsTimer = null;
       this.started = false;
       this.reporter = null;
-      this.transport = createPublishTransport(signaling);
+      this.transport = createPublishTransport(signaling, options.maxBitrateKbps);
     }
     /** Begin broadcasting under the given stream id. */
     async start(streamId) {

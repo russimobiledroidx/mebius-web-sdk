@@ -53,8 +53,11 @@ export interface ViewTransport {
   playheadEpochMs?(): number | null;
 }
 
-export function createPublishTransport(signaling: SignalingClient): PublishTransport {
-  return new WhipPublishTransport(signaling);
+export function createPublishTransport(
+  signaling: SignalingClient,
+  maxBitrateKbps?: number,
+): PublishTransport {
+  return new WhipPublishTransport(signaling, maxBitrateKbps);
 }
 
 /**
