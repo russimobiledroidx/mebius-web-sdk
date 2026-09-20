@@ -47,7 +47,7 @@ function preferH264(pc: RTCPeerConnection): void {
 /**
  * Ceiling on what a publisher's video encoder may send, in kbps.
  *
- * 3500 matches what the studio's OBS encoder is configured to send, so a broadcast
+ * 2500 matches what the studio's OBS encoder is configured to send, so a broadcast
  * costs the same whichever path it came from — a host in a browser and a host in
  * the studio bill identically.
  *
@@ -58,7 +58,7 @@ function preferH264(pc: RTCPeerConnection): void {
  * Every Mebius SDK carries this same number. Changing it in one place without the
  * others makes the cost of a broadcast depend on the device that made it.
  */
-export const DEFAULT_MAX_BITRATE_KBPS = 3500;
+export const DEFAULT_MAX_BITRATE_KBPS = 2500;
 
 export class WhipPublishTransport implements PublishTransport {
   private pc: RTCPeerConnection | null = null;

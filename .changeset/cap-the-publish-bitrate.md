@@ -18,7 +18,7 @@ A number that looks generous for one host is a bandwidth bill for a thousand
 viewers.
 
 `BroadcasterOptions.maxBitrateKbps` sets the ceiling on the video sender's
-encoding parameters, which is the only place it is real. It defaults to 3500,
+encoding parameters, which is the only place it is real. It defaults to 2500,
 matched to the studio's encoder, so the same broadcast costs the same whichever
 path it came from — and every Mebius SDK now carries that same number. A ceiling,
 not a target: still scenes still cost less. Pass 0 to lift it.

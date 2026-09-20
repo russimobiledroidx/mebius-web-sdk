@@ -42743,7 +42743,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       }
     }
   }
-  var DEFAULT_MAX_BITRATE_KBPS = 3500;
+  var DEFAULT_MAX_BITRATE_KBPS = 2500;
   var WhipPublishTransport = class {
     constructor(signaling, maxBitrateKbps = DEFAULT_MAX_BITRATE_KBPS) {
       this.signaling = signaling;
