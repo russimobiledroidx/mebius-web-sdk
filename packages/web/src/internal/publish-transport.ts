@@ -44,11 +44,54 @@ function preferH264(pc: RTCPeerConnection): void {
   }
 }
 
+/**
+ * Ceiling on what a publisher's video encoder may send, in kbps.
+ *
+ * 2500 matches what the studio's OBS encoder is configured to send, so a broadcast
+ * costs the same whichever path it came from — a host in a browser and a host in
+ * the studio bill identically.
+ *
+ * A ceiling, not a target: the encoder still spends less on still scenes. What it
+ * removes is the open end, where a capable machine answered high-motion content
+ * with whatever it could encode.
+ *
+ * Every Mebius SDK carries this same number. Changing it in one place without the
+ * others makes the cost of a broadcast depend on the device that made it.
+ */
+export const DEFAULT_MAX_BITRATE_KBPS = 2500;
+
 export class WhipPublishTransport implements PublishTransport {
   private pc: RTCPeerConnection | null = null;
   private resourceUrl: string | null = null;
 
-  constructor(private readonly signaling: SignalingClient) {}
+  constructor(
+    private readonly signaling: SignalingClient,
+    private readonly maxBitrateKbps: number = DEFAULT_MAX_BITRATE_KBPS,
+  ) {}
+
+  /**
+   * Caps the video encoder on the sender, which is the only place the ceiling is
+   * real — see BroadcasterOptions.maxBitrateKbps.
+   *
+   * Best effort. A browser that refuses the parameters publishes uncapped rather
+   * than failing to go live: an unbudgeted broadcast beats no broadcast, and the
+   * stats report the truth either way.
+   */
+  private async applyBitrateCap(): Promise<void> {
+    if (!this.maxBitrateKbps || this.maxBitrateKbps <= 0) return;
+    const sender = this.pc?.getSenders().find((s) => s.track?.kind === "video");
+    if (!sender) return;
+    try {
+      const params = sender.getParameters();
+      params.encodings = params.encodings?.length ? params.encodings : [{}];
+      for (const encoding of params.encodings) {
+        encoding.maxBitrate = this.maxBitrateKbps * 1000;
+      }
+      await sender.setParameters(params);
+    } catch (cause) {
+      console.warn("[mebius] could not cap the publish bitrate", cause);
+    }
+  }
 
   async start(streamId: string, stream: MediaStream): Promise<void> {
     const pc = new RTCPeerConnection(DEFAULT_RTC_CONFIG);
@@ -58,6 +101,7 @@ export class WhipPublishTransport implements PublishTransport {
       pc.addTrack(track, stream);
     }
     preferH264(pc);
+    await this.applyBitrateCap();
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);

@@ -86,6 +86,24 @@ export interface BroadcasterOptions {
   video?: MediaConstraint;
   /** Capture audio. Defaults to `true`. */
   audio?: MediaConstraint;
+  /**
+   * Ceiling on what the video encoder may send, in kbps.
+   *
+   * Defaults to the ceiling every Mebius SDK uses, which matches the studio's
+   * encoder — so a broadcast costs the same whichever path it came from. Pass `0`
+   * to lift it and let the browser decide.
+   *
+   * Worth understanding before changing: nothing transcodes downstream, so every
+   * viewer is delivered at exactly the bitrate published here. One broadcaster's
+   * setting is multiplied by the size of its audience — a number that looks
+   * generous for one host is a bandwidth bill for a thousand viewers.
+   *
+   * Capture constraints do not do this on their own. They bound the SOURCE, while
+   * the encoder still chooses how many bits to spend describing it, and
+   * high-motion content (sport above all) makes it spend near the top of its
+   * range.
+   */
+  maxBitrateKbps?: number;
 }
 
 /**
