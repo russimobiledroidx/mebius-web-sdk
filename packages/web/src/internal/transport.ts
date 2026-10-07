@@ -4,7 +4,7 @@
  * The public API never names a transport; it only asks for a playback *mode*.
  * This factory maps a mode to the right hidden delivery mechanism.
  */
-import type { BroadcastStats, MebiusDelivery, PlaybackMode, PlaybackStats } from "../types.js";
+import type { BroadcastStats, MebiusDelivery, PlaybackMode, PlaybackRoute, PlaybackStats } from "../types.js";
 import type { SignalingClient } from "./signaling.js";
 import { WhipPublishTransport } from "./publish-transport.js";
 import { WhepViewTransport, DEFAULT_REALTIME_TARGET_MS } from "./ll-view-transport.js";
@@ -34,6 +34,8 @@ export type ViewTransportKind = "whep" | "flv_js" | "hls";
 export interface ViewTransport {
   /** Which mechanism this is, for telemetry. Never shown to the viewer. */
   readonly kind: ViewTransportKind;
+  /** Which delivery route this transport serves. Set by the candidate factory. */
+  route?: PlaybackRoute;
   start(streamId: string, video: HTMLVideoElement): Promise<void>;
   stop(): Promise<void>;
   getStats(): Promise<PlaybackStats | null>;
@@ -70,6 +72,11 @@ const KIND_FAST = "fast";
 const KIND_WIDE = "wide";
 const KIND_LOCAL = "local";
 
+function onRoute<T extends ViewTransport>(t: T, route: PlaybackRoute): T {
+  t.route = route;
+  return t;
+}
+
 /** True when this browser can play a Media-Source-based stream (not iOS Safari). */
 function canPlayBuffered(): boolean {
   return typeof MediaSource !== "undefined";
@@ -83,9 +90,9 @@ function transportFor(
 ): ViewTransport | null {
   const targetS = targetLatencyMs === undefined ? undefined : targetLatencyMs / 1000;
   if (kind === KIND_FAST)
-    return canPlayBuffered() ? new FlvViewTransport(signaling, path, targetS) : null;
+    return canPlayBuffered() ? onRoute(new FlvViewTransport(signaling, path, targetS), kind) : null;
   if (kind === KIND_WIDE || kind === KIND_LOCAL)
-    return new HlsViewTransport(signaling, path, targetS);
+    return onRoute(new HlsViewTransport(signaling, path, targetS), kind);
   // An unknown kind is a newer gateway talking to an older SDK. Skip it rather
   // than guess: the list is ordered, so the next entry is the intended fallback.
   return null;
@@ -122,10 +129,13 @@ export function createViewCandidates(
   // Every mode ends with the origin playlist, reachable with no delivery list at
   // all. Without this, a caller that never passes `deliveries` (every 0.x
   // integration today) would get an empty candidate list and fail to play.
-  const originFallback = new HlsViewTransport(
-    signaling,
-    undefined,
-    targetLatencyMs === undefined ? undefined : targetLatencyMs / 1000,
+  const originFallback = onRoute(
+    new HlsViewTransport(
+      signaling,
+      undefined,
+      targetLatencyMs === undefined ? undefined : targetLatencyMs / 1000,
+    ),
+    KIND_LOCAL,
   );
   const allKinds = [KIND_FAST, KIND_WIDE, KIND_LOCAL];
 
@@ -133,7 +143,7 @@ export function createViewCandidates(
     case "low-latency":
       // The real-time pull is not in `deliveries` — it is signaled, not fetched.
       return [
-        new WhepViewTransport(signaling, targetLatencyMs ?? DEFAULT_REALTIME_TARGET_MS),
+        onRoute(new WhepViewTransport(signaling, targetLatencyMs ?? DEFAULT_REALTIME_TARGET_MS), "realtime"),
         ...fromGateway(allKinds),
         originFallback,
       ];
