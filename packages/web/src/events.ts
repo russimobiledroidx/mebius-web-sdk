@@ -1,5 +1,5 @@
 import type { MebiusError } from "./errors.js";
-import type { BroadcastStats, CaptionSegment, MebiusQuality, PlaybackStats } from "./types.js";
+import type { BroadcastStats, CaptionSegment, MebiusQuality, PlaybackRoute, PlaybackStats } from "./types.js";
 
 // NOTE: these are `type` aliases (not interfaces) so they satisfy the
 // `Record<string, unknown>` constraint on TypedEmitter — TS only treats object
@@ -39,6 +39,11 @@ export type PlayerEventMap = {
    * stands — today always empty, since no route offers a ladder.
    */
   "qualities-changed": readonly MebiusQuality[];
+  /**
+   * The player settled on a delivery route: at start, and again whenever
+   * recovery fails over to a different one. Fires before the matching `playing`.
+   */
+  route: { kind: PlaybackRoute };
 };
 
 /** Event payloads emitted by {@link MebiusCaptions}. */

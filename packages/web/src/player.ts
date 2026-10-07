@@ -6,7 +6,7 @@ import { createViewCandidates, type ViewTransport } from "./internal/transport.j
 import { QoeReporter, type TelemetryTarget } from "./internal/telemetry.js";
 import { resetVideoElement } from "./internal/autoplay.js";
 import { FreezeClock } from "./internal/freeze-clock.js";
-import type { MebiusDelivery, MebiusQuality, PlayerOptions, ViewTarget } from "./types.js";
+import type { MebiusDelivery, MebiusQuality, PlaybackRoute, PlayerOptions, ViewTarget } from "./types.js";
 
 const STATS_INTERVAL_MS = 2000;
 
@@ -248,6 +248,7 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
           // on a DOM event alone would let a long broadcast that loses its route
           // once an hour run out of attempts by the afternoon.
           this.recoveryAttempts = 0;
+          if (candidate.route) this.emit("route", { kind: candidate.route });
           this.emit("playing", { streamId });
           return null;
         }
@@ -324,6 +325,11 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
    * The list is per ROUTE, so it is re-read on failover and announced with
    * `qualities-changed`.
    */
+  /** The delivery route currently playing, or `null` when not playing. See the `route` event. */
+  get route(): PlaybackRoute | null {
+    return this.playing ? (this.transport?.route ?? null) : null;
+  }
+
   get qualities(): readonly MebiusQuality[] {
     return this.renditions;
   }

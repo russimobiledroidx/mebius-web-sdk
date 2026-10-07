@@ -125,6 +125,14 @@ export interface BroadcasterOptions {
 // gateway already knows which routes are live and what each costs to serve.
 export type PlaybackMode = "auto" | "low-latency" | "balanced" | "scale";
 
+/**
+ * The delivery route a player is actually playing over, as the gateway names it:
+ * `"realtime"` (signaled real-time pull), `"fast"`, `"wide"` (CDN) or `"local"`
+ * (the origin playlist). Read {@link MebiusPlayer.route} or listen for `route`
+ * instead of inferring it from network requests.
+ */
+export type PlaybackRoute = "realtime" | "fast" | "wide" | "local";
+
 /** Options for {@link MebiusClient.createPlayer}. */
 export interface PlayerOptions {
   /** Defaults to `"auto"` — let Mebius choose per viewer. */

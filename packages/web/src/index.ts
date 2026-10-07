@@ -25,6 +25,7 @@ export type {
   BroadcasterOptions,
   PlayerOptions,
   PlaybackMode,
+  PlaybackRoute,
   ViewTarget,
   MediaConstraint,
   BroadcastStats,

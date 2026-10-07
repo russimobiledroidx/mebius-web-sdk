@@ -66,6 +66,24 @@ describe("syncLiveEdge", () => {
     syncLiveEdge(v);
     expect(v.currentTime).toBe(0);
   });
+
+  // Live sport: a viewer 3-8s behind used to get only a 5% speed-up (~100s to
+  // win back 5s). Now anything past target + 2s jumps, and the band below it
+  // catches up at 1.1.
+  it.each([
+    // drift, expected rate, seeks?
+    [1, 0.98, false], // under 0.9 × target: rebuild the cushion
+    [3, 1, false], // 1.5 × target exactly: still the dead zone
+    [3.5, 1.1, false], // between 1.5 × target and target + 2: catch up
+    [5, 1, true], // past target + 2: jump back to target
+    [9, 1, true],
+  ])("drift %ss at the default target → rate %s, seek %s", (drift, rate, seeks) => {
+    const edge = 100;
+    const v = video(edge - drift, edge);
+    syncLiveEdge(v);
+    expect(v.playbackRate).toBe(rate);
+    expect(v.currentTime).toBeCloseTo(seeks ? edge - T : edge - drift);
+  });
 });
 
 // Regression: without this, captions never render at all on the FLV route —

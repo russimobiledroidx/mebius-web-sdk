@@ -207,3 +207,38 @@ describe("first-frame watchdog", () => {
     }
   });
 });
+
+// Apps used to guess the route from which .m3u8 got requested. Name it instead.
+describe("active route", () => {
+  it("tags each candidate with the route it serves", () => {
+    const c = createViewCandidates("low-latency", sig(), [
+      { kind: "fast", path: "/d/fast/s1" },
+      { kind: "wide", path: "/d/wide/s1" },
+    ]);
+    expect(c.map((t) => t.route)).toEqual(["realtime", "fast", "wide", "local"]);
+  });
+
+  it("is exposed as player.route and announced before playing, for the route that delivered", async () => {
+    vi.useFakeTimers();
+    try {
+      const dead = Object.assign(fakeTransport({ delivers: false }), { route: "fast" as const });
+      const live = Object.assign(fakeTransport({ delivers: true }), { route: "wide" as const });
+      const p = playerWith([dead, live]);
+      const events: string[] = [];
+      p.on("route", ({ kind }) => events.push(`route:${kind}`));
+      p.on("playing", () => events.push("playing"));
+
+      expect(p.route).toBeNull();
+      const playing = p.play("s1", videoEl());
+      await vi.advanceTimersByTimeAsync(8000);
+      await playing;
+
+      expect(events).toEqual(["route:wide", "playing"]);
+      expect(p.route).toBe("wide");
+      await p.stop();
+      expect(p.route).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

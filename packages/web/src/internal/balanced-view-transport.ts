@@ -63,20 +63,25 @@ const LIVE_FLV_CONFIG = {
 export const DEFAULT_BALANCED_TARGET_S = 2;
 
 /**
- * Speed used to close a gap, and to open one. Both are deliberately tiny.
+ * Speed used to close a gap, and to open one.
  *
  * Correcting drift by JUMPING the playhead is what this replaced, and the jump
  * was itself a visible glitch — one that fired every time the buffer recovered,
  * so the route meant to be the smooth one produced a stutter as a matter of
- * routine. Changing speed by 2-5% is inaudible and invisible, and it converges
- * within a minute. Above 1.1 the pitch shift starts to be heard, which is worse
- * than the delay it buys back.
+ * routine. Speed is invisible; 1.1 is the ceiling, above it the pitch shift
+ * starts to be heard. 1.05 was quieter but took ~100s to win back 5s, which on
+ * live sport reads as "late"; 1.1 halves that.
  */
-const CATCH_UP_RATE = 1.05;
+const CATCH_UP_RATE = 1.1;
 const BUILD_UP_RATE = 0.98;
 
-/** Drift, as a multiple of target, where speed alone would take too long. */
-const SEEK_AT = 4;
+/**
+ * Seconds past the target where speed alone would take too long, so the
+ * playhead jumps instead. Additive, not a multiple of target: at the default 2s
+ * target a multiple of 4 let a viewer sit 8s behind before anything but a 5%
+ * speed-up happened.
+ */
+const SEEK_ABOVE_TARGET_S = 2;
 /** Drift band around the target that is left alone, as multiples of target. */
 const CATCH_UP_ABOVE = 1.5;
 const BUILD_UP_BELOW = 0.9;
@@ -145,7 +150,7 @@ function stalledWithData(video: HTMLVideoElement, ms: number): Promise<boolean> 
  * "about to be thrown away".
  *
  * Four bands, with a dead zone between them so the correction cannot oscillate:
- * far too far behind, jump (speed would take minutes); somewhat behind, play
+ * more than 2s past target, jump (speed would take too long); somewhat behind, play
  * slightly fast; near target, leave alone; too close to the edge, play slightly
  * slow until the cushion is rebuilt.
  */
@@ -155,7 +160,7 @@ export function syncLiveEdge(video: HTMLVideoElement, targetS = DEFAULT_BALANCED
   const edge = ranges.end(ranges.length - 1);
   const drift = edge - video.currentTime;
 
-  if (drift > targetS * SEEK_AT) {
+  if (drift > targetS + SEEK_ABOVE_TARGET_S) {
     video.currentTime = edge - targetS;
     video.playbackRate = 1;
     return;
