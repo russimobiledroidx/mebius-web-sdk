@@ -43185,9 +43185,9 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     reuseRedirectedURL: true
   };
   var DEFAULT_BALANCED_TARGET_S = 2;
-  var CATCH_UP_RATE = 1.05;
+  var CATCH_UP_RATE = 1.1;
   var BUILD_UP_RATE = 0.98;
-  var SEEK_AT = 4;
+  var SEEK_ABOVE_TARGET_S = 2;
   var CATCH_UP_ABOVE = 1.5;
   var BUILD_UP_BELOW = 0.9;
   var AUDIO_RETRY_MS = 2500;
@@ -43212,7 +43212,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     if (ranges.length === 0) return;
     const edge = ranges.end(ranges.length - 1);
     const drift = edge - video.currentTime;
-    if (drift > targetS * SEEK_AT) {
+    if (drift > targetS + SEEK_ABOVE_TARGET_S) {
       video.currentTime = edge - targetS;
       video.playbackRate = 1;
       return;
@@ -43377,29 +43377,36 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   var KIND_FAST = "fast";
   var KIND_WIDE = "wide";
   var KIND_LOCAL = "local";
+  function onRoute(t, route) {
+    t.route = route;
+    return t;
+  }
   function canPlayBuffered() {
     return typeof MediaSource !== "undefined";
   }
   function transportFor(kind, path, signaling, targetLatencyMs) {
     const targetS = targetLatencyMs === void 0 ? void 0 : targetLatencyMs / 1e3;
     if (kind === KIND_FAST)
-      return canPlayBuffered() ? new FlvViewTransport(signaling, path, targetS) : null;
+      return canPlayBuffered() ? onRoute(new FlvViewTransport(signaling, path, targetS), kind) : null;
     if (kind === KIND_WIDE || kind === KIND_LOCAL)
-      return new HlsViewTransport(signaling, path, targetS);
+      return onRoute(new HlsViewTransport(signaling, path, targetS), kind);
     return null;
   }
   function createViewCandidates(mode, signaling, deliveries = [], targetLatencyMs) {
     const fromGateway = (kinds) => deliveries.filter((d) => kinds.includes(d.kind)).map((d) => transportFor(d.kind, d.path, signaling, targetLatencyMs)).filter((t) => t !== null);
-    const originFallback = new HlsViewTransport(
-      signaling,
-      void 0,
-      targetLatencyMs === void 0 ? void 0 : targetLatencyMs / 1e3
+    const originFallback = onRoute(
+      new HlsViewTransport(
+        signaling,
+        void 0,
+        targetLatencyMs === void 0 ? void 0 : targetLatencyMs / 1e3
+      ),
+      KIND_LOCAL
     );
     const allKinds = [KIND_FAST, KIND_WIDE, KIND_LOCAL];
     switch (mode) {
       case "low-latency":
         return [
-          new WhepViewTransport(signaling, targetLatencyMs != null ? targetLatencyMs : DEFAULT_REALTIME_TARGET_MS),
+          onRoute(new WhepViewTransport(signaling, targetLatencyMs != null ? targetLatencyMs : DEFAULT_REALTIME_TARGET_MS), "realtime"),
           ...fromGateway(allKinds),
           originFallback
         ];
@@ -43413,7 +43420,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
 
   // src/internal/telemetry.ts
-  var SDK_VERSION = true ? `web/${"0.9.0"}` : "web/dev";
+  var SDK_VERSION = true ? `web/${"0.9.1"}` : "web/dev";
   var FLUSH_INTERVAL_MS = 15e3;
   var MAX_BATCH = 64;
   function describeDevice() {
@@ -43926,6 +43933,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
             }
             this.startStats();
             this.recoveryAttempts = 0;
+            if (candidate.route) this.emit("route", { kind: candidate.route });
             this.emit("playing", { streamId });
             return null;
           }
@@ -43995,6 +44003,11 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      * The list is per ROUTE, so it is re-read on failover and announced with
      * `qualities-changed`.
      */
+    /** The delivery route currently playing, or `null` when not playing. See the `route` event. */
+    get route() {
+      var _a, _b;
+      return this.playing ? (_b = (_a = this.transport) == null ? void 0 : _a.route) != null ? _b : null : null;
+    }
     get qualities() {
       return this.renditions;
     }
