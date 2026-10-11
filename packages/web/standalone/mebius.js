@@ -43197,13 +43197,13 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       }));
       this.hls = hls;
       hls.on(Hls2.Events.ERROR, (_evt, data) => {
-        var _a, _b;
-        if (this.level !== -1 && data.details === Hls2.ErrorDetails.LEVEL_LOAD_ERROR && isMissingRung((_a = data.response) == null ? void 0 : _a.code)) {
+        var _a, _b, _c, _d;
+        if (this.level !== -1 && data.details === Hls2.ErrorDetails.LEVEL_LOAD_ERROR && isMissingRung((_a = data.response) == null ? void 0 : _a.code) && !((_c = hls.levels[(_b = data.level) != null ? _b : -1]) == null ? void 0 : _c.details)) {
           this.prefs.selected = "auto";
           void this.applyQuality();
           return;
         }
-        if (data.fatal) (_b = this.bufferingCb) == null ? void 0 : _b.call(this);
+        if (data.fatal) (_d = this.bufferingCb) == null ? void 0 : _d.call(this);
       });
       if (this.renditions.length > 0) {
         hls.on(Hls2.Events.MANIFEST_PARSED, () => {
@@ -43352,6 +43352,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   var STEP_DOWN_STALLS = 2;
   var STEP_DOWN_WINDOW_MS = 2e4;
   var SEEK_GRACE_MS = 1500;
+  var WARMUP_RETRY_MS = 1e3;
   function stalledWithData(video, ms) {
     if (video.currentTime > 0) return Promise.resolve(false);
     return new Promise((resolve) => {
@@ -43410,6 +43411,14 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.announced = "";
       /** When syncLiveEdge last jumped the playhead; see SEEK_GRACE_MS. */
       this.lastSeekAt = 0;
+      /**
+       * True once the open rung has played. After that a 403/404 is an ordinary
+       * lost connection for the player's recovery, not a rung that does not exist.
+       */
+      this.rungPlayed = false;
+      /** The open rung already had its one warm-up retry. */
+      this.rungRetried = false;
+      this.retryTimer = null;
       /** The rung open right now; `null` on the delivery's own path (no ladder). */
       this.rung = null;
       /** Start times of recent distinct stalls, for the auto step-down. */
@@ -43454,6 +43463,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.withAudio = true;
       this.announced = "";
       this.lastSeekAt = 0;
+      this.rungPlayed = false;
+      this.rungRetried = false;
       this.listeners = new AbortController();
       const { signal } = this.listeners;
       video.addEventListener("ended", () => {
@@ -43469,7 +43480,14 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         },
         { signal }
       );
-      video.addEventListener("playing", () => this.inStall = false, { signal });
+      video.addEventListener(
+        "playing",
+        () => {
+          this.inStall = false;
+          this.rungPlayed = true;
+        },
+        { signal }
+      );
       video.addEventListener(
         "timeupdate",
         () => {
@@ -43510,7 +43528,12 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.player = player;
       player.on((_a = flvjs.Events.ERROR) != null ? _a : "error", (_type, _detail, info) => {
         var _a2;
-        if (this.rung && isMissingRung(info == null ? void 0 : info.code)) {
+        if (this.rung && !this.rungPlayed && isMissingRung(info == null ? void 0 : info.code)) {
+          if (!this.rungRetried) {
+            this.rungRetried = true;
+            this.retryTimer = setTimeout(() => void this.reopen(this.rung, true), WARMUP_RETRY_MS);
+            return;
+          }
           if (pinnedRung(this.ladder, this.prefs)) {
             this.prefs.selected = "auto";
             if (pickRung(this.ladder, this.prefs) !== this.rung) {
@@ -43539,13 +43562,16 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      * carry over and the switch costs one reconnect, not a route walk. Before
      * start() there is nothing to reopen; start() picks up the stored choice.
      */
-    async reopen(rung) {
+    async reopen(rung, retry = false) {
       const { video, flvjs } = this;
       if (!video || !flvjs) return;
-      if (rung === this.rung) {
+      if (rung === this.rung && !retry) {
         this.announce();
         return;
       }
+      this.clearRetry();
+      if (!retry) this.rungRetried = false;
+      this.rungPlayed = false;
       this.rung = rung;
       this.stallTimes = [];
       this.inStall = true;
@@ -43598,8 +43624,13 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       void this.reopen(lower);
       return true;
     }
+    clearRetry() {
+      if (this.retryTimer) clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
     async stop() {
       var _a;
+      this.clearRetry();
       (_a = this.listeners) == null ? void 0 : _a.abort();
       this.listeners = null;
       this.teardownPlayer();
@@ -44420,6 +44451,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         throw mebiusError("UNKNOWN", "setAllowedQualities takes an array of quality ids, or null.");
       }
       this.prefs.allowed = ids && ids.length > 0 ? [...ids] : null;
+      this.refreshQualities();
       await ((_b = (_a = this.transport) == null ? void 0 : _a.applyQuality) == null ? void 0 : _b.call(_a));
       this.refreshQualities();
       const picked = this.prefs.selected;

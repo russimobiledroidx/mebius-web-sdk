@@ -327,7 +327,7 @@ describe("HLS route (hls.js)", () => {
     const { t, hls, changes, q } = await started(prefs({ selected: "1080p" }));
     t.onBuffering(buffering);
     expect(hls.writes.at(-1)).toEqual(["loadLevel", 3]);
-    hls.handlers.get("e")!(undefined, { fatal: true, details: "levelLoadError", response: { code: 404 } });
+    hls.handlers.get("e")!(undefined, { fatal: true, details: "levelLoadError", level: 3, response: { code: 404 } });
     expect(q.selected).toBe("auto");
     expect(hls.writes.at(-1)).toEqual(["loadLevel", -1]);
     expect(changes.at(-1)!.auto).toBe(true);
@@ -340,6 +340,13 @@ describe("HLS route (hls.js)", () => {
     hls.handlers.get("e")!(undefined, { fatal: false, details: "fragLoadError", response: { code: 403 } });
     expect(q.selected).toBe("1080p");
     expect(hls.writes.at(-1)).toEqual(["loadLevel", 3]);
+  });
+
+  it("keeps the pin when a level that already loaded fails a live refresh", async () => {
+    const { hls, q } = await started(prefs({ selected: "1080p" }));
+    (hls.levels[3] as { details?: unknown }).details = {}; // loaded once
+    hls.handlers.get("e")!(undefined, { fatal: false, details: "levelLoadError", level: 3, response: { code: 404 } });
+    expect(q.selected).toBe("1080p");
   });
 
   it("an unmatched pick reports auto, not a pin that is not happening", async () => {
@@ -370,13 +377,13 @@ describe("HLS route (hls.js)", () => {
 });
 
 describe("FLV route (flv.js)", () => {
-  async function started(q = prefs()) {
+  async function started(q = prefs(), play = true) {
     const t = new FlvViewTransport(sig(), "/d/fast/s1", undefined, LADDER, q);
     const changes: QualityChange[] = [];
     t.onQualityChanged((c) => changes.push(c));
     const v = el();
     await t.start("s1", asVideo(v));
-    v.dispatch("playing");
+    if (play) v.dispatch("playing");
     return { t, v, changes, q };
   }
 
@@ -495,38 +502,6 @@ describe("FLV route (flv.js)", () => {
     expect(flvOpened).toHaveLength(2);
   });
 
-  it("under auto, a rung answering 404 steps down instead of failing the route", async () => {
-    const buffering = vi.fn();
-    const { t, changes } = await started();
-    t.onBuffering(buffering);
-    flvOpened[0]!.onError!("NetworkError", "HttpStatusCodeInvalid", { code: 404 });
-    await tick();
-    expect(opened()).toEqual(["/d/fast/s1/1080p", "/d/fast/s1/720p"]);
-    expect(changes.at(-1)).toEqual({ id: "720p", auto: true });
-    expect(buffering).not.toHaveBeenCalled();
-  });
-
-  it("at the lowest allowed rung a 404 is handed on as a stall", async () => {
-    const buffering = vi.fn();
-    const { t } = await started(prefs({ allowed: ["480p"] }));
-    t.onBuffering(buffering);
-    flvOpened[0]!.onError!("NetworkError", "HttpStatusCodeInvalid", { code: 404 });
-    expect(flvOpened).toHaveLength(1);
-    expect(buffering).toHaveBeenCalledOnce();
-  });
-
-  it("a failing pin whose auto rung is the same dead rung steps down past it", async () => {
-    const buffering = vi.fn();
-    const { t, changes, q } = await started(prefs({ selected: "1080p" }));
-    t.onBuffering(buffering);
-    flvOpened[0]!.onError!("NetworkError", "HttpStatusCodeInvalid", { code: 403 });
-    await tick();
-    expect(q.selected).toBe("auto");
-    expect(opened()).toEqual(["/d/fast/s1/1080p", "/d/fast/s1/720p"]);
-    expect(changes.at(-1)).toEqual({ id: "720p", auto: true });
-    expect(buffering).not.toHaveBeenCalled();
-  });
-
   it("does not step down a manual pick", async () => {
     const { t, v, q } = await started();
     q.selected = "1080p";
@@ -541,16 +516,98 @@ describe("FLV route (flv.js)", () => {
     expect(flvOpened).toHaveLength(1);
   });
 
-  it("a pinned rung answering 404 falls back to auto instead of failing the route", async () => {
+  /** The open rung answers 404/403, then again on its one warm-up retry. */
+  async function missingRung(code = 404) {
+    vi.useFakeTimers();
+    flvOpened.at(-1)!.onError!("NetworkError", "HttpStatusCodeInvalid", { code });
+    await vi.advanceTimersByTimeAsync(1000);
+    flvOpened.at(-1)!.onError!("NetworkError", "HttpStatusCodeInvalid", { code });
+    await vi.advanceTimersByTimeAsync(0);
+  }
+
+  it("retries a rung that 404s on its first open once, and keeps it when it warms up", async () => {
+    const { t, v, changes } = await started(prefs(), false);
     const buffering = vi.fn();
-    const { t, changes, q } = await started(prefs({ selected: "1080p", maxHeight: 720 }));
     t.onBuffering(buffering);
+    vi.useFakeTimers();
     flvOpened[0]!.onError!("NetworkError", "HttpStatusCodeInvalid", { code: 404 });
-    await tick();
-    expect(q.selected).toBe("auto");
-    expect(opened().at(-1)).toBe("/d/fast/s1/720p"); // auto, within the cap
+    expect(flvOpened).toHaveLength(1); // not straight away
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(opened()).toEqual(["/d/fast/s1/1080p", "/d/fast/s1/1080p"]);
+    v.dispatch("playing"); // warmed up
+    expect(changes.at(-1)).toEqual({ id: "1080p", auto: true });
+    expect(buffering).not.toHaveBeenCalled();
+  });
+
+  it("under auto, a rung still 404 after the retry steps down instead of failing the route", async () => {
+    const buffering = vi.fn();
+    const { t, changes } = await started(prefs(), false);
+    t.onBuffering(buffering);
+    await missingRung();
+    expect(opened()).toEqual(["/d/fast/s1/1080p", "/d/fast/s1/1080p", "/d/fast/s1/720p"]);
     expect(changes.at(-1)).toEqual({ id: "720p", auto: true });
     expect(buffering).not.toHaveBeenCalled();
+  });
+
+  it("a 404 on a rung that already played is an ordinary stall, not a missing rung", async () => {
+    const buffering = vi.fn();
+    const { t, q } = await started(prefs({ selected: "1080p" })); // has played
+    t.onBuffering(buffering);
+    vi.useFakeTimers();
+    flvOpened[0]!.onError!("NetworkError", "HttpStatusCodeInvalid", { code: 404 });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(flvOpened).toHaveLength(1);
+    expect(q.selected).toBe("1080p");
+    expect(buffering).toHaveBeenCalledOnce();
+  });
+
+  it("at the lowest allowed rung a missing rung is handed on as a stall", async () => {
+    const buffering = vi.fn();
+    const { t } = await started(prefs({ allowed: ["480p"] }), false);
+    t.onBuffering(buffering);
+    await missingRung();
+    expect(opened()).toEqual(["/d/fast/s1/480p", "/d/fast/s1/480p"]);
+    expect(buffering).toHaveBeenCalledOnce();
+  });
+
+  it("a failing pin whose auto rung is the same dead rung steps down past it", async () => {
+    const buffering = vi.fn();
+    const { t, changes, q } = await started(prefs({ selected: "1080p" }), false);
+    t.onBuffering(buffering);
+    await missingRung(403);
+    expect(q.selected).toBe("auto");
+    expect(opened().at(-1)).toBe("/d/fast/s1/720p");
+    expect(changes.at(-1)).toEqual({ id: "720p", auto: true });
+    expect(buffering).not.toHaveBeenCalled();
+  });
+
+  it("a pinned rung still 404 after the retry falls back to auto within the cap", async () => {
+    const buffering = vi.fn();
+    const { t, changes, q } = await started(prefs({ selected: "1080p", maxHeight: 720 }), false);
+    t.onBuffering(buffering);
+    await missingRung();
+    expect(q.selected).toBe("auto");
+    expect(opened().at(-1)).toBe("/d/fast/s1/720p");
+    expect(changes.at(-1)).toEqual({ id: "720p", auto: true });
+    expect(buffering).not.toHaveBeenCalled();
+  });
+
+  it("no ladder: a 403/404 goes straight to the buffering callback and nothing else", async () => {
+    const q = prefs();
+    const t = new FlvViewTransport(sig(), "/d/fast/s1", undefined, [], q);
+    const buffering = vi.fn();
+    const changes = vi.fn();
+    t.onBuffering(buffering);
+    t.onQualityChanged(changes);
+    await t.start("s1", asVideo(el())); // never played: the strictest case
+    vi.useFakeTimers();
+    flvOpened[0]!.onError!("NetworkError", "HttpStatusCodeInvalid", { code: 404 });
+    flvOpened[0]!.onError!("NetworkError", "HttpStatusCodeInvalid", { code: 403 });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(buffering).toHaveBeenCalledTimes(2);
+    expect(flvOpened).toHaveLength(1);
+    expect(changes).not.toHaveBeenCalled();
+    expect(q).toEqual(defaultQualityPrefs());
   });
 });
 
@@ -652,6 +709,19 @@ describe("player quality API", () => {
     // The list is re-read once a reloaded master is parsed, not only on the call.
     await p.setAllowedQualities(["720p", "540p", "480p"]);
     hls.parse([480, 540]); // this master came back without 720p
+    expect(lists.at(-1)).toEqual(["540p", "480p"]);
+    await p.stop();
+  });
+
+  it("on the fast route the new list is announced before the reconnect plays", async () => {
+    const p = fastPlayer();
+    const lists: string[][] = [];
+    p.on("qualities-changed", (l) => lists.push(l.map((q) => q.id)));
+    const v = el();
+    await p.play("s1", asVideo(v));
+    v.play = () => new Promise<void>(() => {}); // the new rung never starts
+    void p.setAllowedQualities(["540p", "480p"]);
+    await tick();
     expect(lists.at(-1)).toEqual(["540p", "480p"]);
     await p.stop();
   });

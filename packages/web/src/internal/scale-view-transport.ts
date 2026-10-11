@@ -302,11 +302,13 @@ export class HlsViewTransport implements ViewTransport {
     hls.on(Hls.Events.ERROR, (_evt, data) => {
       // A pinned rung the vendor never produced (the source was smaller than
       // it) answers 403/404 on its playlist: drop the pin, not the route. Only
-      // the playlist load: a segment 404 or an expired-token 403 is not that.
+      // a playlist that never loaded: a segment 404, an expired-token 403, or
+      // a live refresh failing on a level that did load is not that.
       if (
         this.level !== -1 &&
         data.details === Hls.ErrorDetails.LEVEL_LOAD_ERROR &&
-        isMissingRung(data.response?.code)
+        isMissingRung(data.response?.code) &&
+        !hls.levels[data.level ?? -1]?.details
       ) {
         this.prefs.selected = "auto";
         void this.applyQuality();

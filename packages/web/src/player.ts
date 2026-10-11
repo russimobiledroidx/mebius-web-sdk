@@ -409,8 +409,11 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
       throw mebiusError("UNKNOWN", "setAllowedQualities takes an array of quality ids, or null.");
     }
     this.prefs.allowed = ids && ids.length > 0 ? [...ids] : null;
-    // Applied first: a route may have to reload its playlist before it can say
-    // what it now offers (and says so again once it has; see refreshQualities).
+    // Read before AND after applying: a route that reconnects to apply it (the
+    // fast route) only resolves once the new rung plays, and the menu should
+    // not wait for that; a route that reloads its playlist (the wide route)
+    // only knows the new list afterwards — and says so again once parsed.
+    this.refreshQualities();
     await this.transport?.applyQuality?.();
     this.refreshQualities();
     // A pick the set now excludes already plays as auto on the route; this

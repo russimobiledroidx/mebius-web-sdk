@@ -136,6 +136,12 @@ const STEP_DOWN_WINDOW_MS = 20_000;
  * refilling, not the network starving, and must not count towards a step-down.
  */
 const SEEK_GRACE_MS = 1500;
+/**
+ * Wait before retrying a rung that answered 403/404 on its first open. An
+ * on-demand transcoder can 404 briefly while a rung warms up, and stepping
+ * down on that would demote every early viewer for nothing.
+ */
+const WARMUP_RETRY_MS = 1000;
 
 /**
  * Resolves true when media has landed but playback still cannot start.
@@ -226,6 +232,14 @@ export class FlvViewTransport implements ViewTransport {
   private announced = "";
   /** When syncLiveEdge last jumped the playhead; see SEEK_GRACE_MS. */
   private lastSeekAt = 0;
+  /**
+   * True once the open rung has played. After that a 403/404 is an ordinary
+   * lost connection for the player's recovery, not a rung that does not exist.
+   */
+  private rungPlayed = false;
+  /** The open rung already had its one warm-up retry. */
+  private rungRetried = false;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
   /** The rung open right now; `null` on the delivery's own path (no ladder). */
   private rung: MebiusRendition | null = null;
   /** Start times of recent distinct stalls, for the auto step-down. */
@@ -283,6 +297,8 @@ export class FlvViewTransport implements ViewTransport {
     this.withAudio = true;
     this.announced = "";
     this.lastSeekAt = 0;
+    this.rungPlayed = false;
+    this.rungRetried = false;
 
     // Bound to this attempt's lifetime. The player hands every candidate route
     // the SAME element, so listeners left behind by a route that failed keep
@@ -300,7 +316,14 @@ export class FlvViewTransport implements ViewTransport {
       },
       { signal },
     );
-    video.addEventListener("playing", () => (this.inStall = false), { signal });
+    video.addEventListener(
+      "playing",
+      () => {
+        this.inStall = false;
+        this.rungPlayed = true;
+      },
+      { signal },
+    );
     video.addEventListener(
       "timeupdate",
       () => {
@@ -371,9 +394,15 @@ export class FlvViewTransport implements ViewTransport {
     this.player = player;
     player.on(flvjs.Events.ERROR ?? "error", (_type, _detail, info) => {
       // A rung the vendor never produced (the source was smaller than it)
-      // answers 403/404. That is a reason to leave the rung, not the route: a
-      // pin falls back to auto, and auto steps down past it.
-      if (this.rung && isMissingRung((info as { code?: number } | undefined)?.code)) {
+      // answers 403/404 before it ever plays. That is a reason to leave the
+      // rung, not the route — after one retry, since a rung warming up answers
+      // the same way: a pin falls back to auto, and auto steps down past it.
+      if (this.rung && !this.rungPlayed && isMissingRung((info as { code?: number } | undefined)?.code)) {
+        if (!this.rungRetried) {
+          this.rungRetried = true;
+          this.retryTimer = setTimeout(() => void this.reopen(this.rung, true), WARMUP_RETRY_MS);
+          return;
+        }
         if (pinnedRung(this.ladder, this.prefs)) {
           this.prefs.selected = "auto";
           // Auto may land on the very rung that just failed; step past it then.
@@ -405,13 +434,16 @@ export class FlvViewTransport implements ViewTransport {
    * carry over and the switch costs one reconnect, not a route walk. Before
    * start() there is nothing to reopen; start() picks up the stored choice.
    */
-  private async reopen(rung: MebiusRendition | null): Promise<void> {
+  private async reopen(rung: MebiusRendition | null, retry = false): Promise<void> {
     const { video, flvjs } = this;
     if (!video || !flvjs) return;
-    if (rung === this.rung) {
+    if (rung === this.rung && !retry) {
       this.announce(); // the mode may still have changed (a pick of the open rung)
       return;
     }
+    this.clearRetry();
+    if (!retry) this.rungRetried = false;
+    this.rungPlayed = false;
     this.rung = rung;
     this.stallTimes = [];
     this.inStall = true;
@@ -472,7 +504,13 @@ export class FlvViewTransport implements ViewTransport {
   /** True when playback only started because the element had to be muted. */
   mutedByPolicy = false;
 
+  private clearRetry(): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+  }
+
   async stop(): Promise<void> {
+    this.clearRetry();
     this.listeners?.abort();
     this.listeners = null;
     this.teardownPlayer();
