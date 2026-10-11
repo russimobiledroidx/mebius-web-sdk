@@ -123,10 +123,10 @@ export interface BroadcasterOptions {
    * high-motion content (sport above all) makes it spend near the top of its
    * range.
    *
-   * A tenant whose engine transcodes a 1080p/720p/480p ladder is the exception:
+   * A tenant whose engine transcodes a 1080p/720p/540p/480p ladder is the exception:
    * viewers get the ladder, not the publish, so the publish is the ladder's
-   * source and `5000` matches the official encoder profile (stream-engine
-   * `docs/INTEGRATION.md` §3.1).
+   * source and `6000` matches the laddered encoder profile (stream-engine
+   * `docs/INTEGRATION.md` §3.1 "Encoder profiles").
    */
   maxBitrateKbps?: number;
 }

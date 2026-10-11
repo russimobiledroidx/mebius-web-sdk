@@ -16,9 +16,10 @@ const GATEWAY = "https://gateway.example";
 const sig = () => new SignalingClient(GATEWAY, "tok");
 
 const LADDER: MebiusRendition[] = [
-  { id: "1080p", height: 1080, bitrateKbps: 5000, path: "/d/fast/s1/1080p" },
-  { id: "720p", height: 720, bitrateKbps: 2800, path: "/d/fast/s1/720p" },
-  { id: "480p", height: 480, bitrateKbps: 1000, path: "/d/fast/s1/480p" },
+  { id: "1080p", height: 1080, bitrateKbps: 6000, path: "/d/fast/s1/1080p" },
+  { id: "720p", height: 720, bitrateKbps: 3000, path: "/d/fast/s1/720p" },
+  { id: "540p", height: 540, bitrateKbps: 2000, path: "/d/fast/s1/540p" },
+  { id: "480p", height: 480, bitrateKbps: 1300, path: "/d/fast/s1/480p" },
 ];
 const WIDE_LADDER = LADDER.map((r) => ({ ...r, path: r.path.replace("/fast/", "/wide/") }));
 
@@ -84,7 +85,7 @@ class FakeHls {
   attachMedia() {}
   destroy() {}
   /** Levels ascending, as hls.js orders a master. */
-  parse(heights = [480, 720, 1080]) {
+  parse(heights = [480, 540, 720, 1080]) {
     this.levels = heights.map((height) => ({ height, bitrate: height * 1000 }));
     this.handlers.get("mp")?.();
   }
@@ -229,14 +230,14 @@ describe("qualities mapping", () => {
     expect(fast!.qualities!().map((q) => q.id)).toEqual(["720p", "480p"]);
     expect(wide!.qualities!().map((q) => q.id)).toEqual(["720p", "480p"]);
     shared.allowed = null;
-    expect(fast!.qualities!().map((q) => q.id)).toEqual(["1080p", "720p", "480p"]);
+    expect(fast!.qualities!().map((q) => q.id)).toEqual(["1080p", "720p", "540p", "480p"]);
     // The path is an internal detail and never reaches the public shape.
-    expect(fast!.qualities!()[0]).toEqual({ id: "1080p", label: "1080p", height: 1080, bitrateKbps: 5000 });
+    expect(fast!.qualities!()[0]).toEqual({ id: "1080p", label: "1080p", height: 1080, bitrateKbps: 6000 });
   });
 
   it("an allowed set that matches nothing on the ladder means all", () => {
     const t = new FlvViewTransport(sig(), "/d/fast/s1", undefined, LADDER, prefs({ allowed: ["4k"] }));
-    expect(t.qualities().map((q) => q.id)).toEqual(["1080p", "720p", "480p"]);
+    expect(t.qualities().map((q) => q.id)).toEqual(["1080p", "720p", "540p", "480p"]);
   });
 });
 
@@ -253,19 +254,19 @@ describe("HLS route (hls.js)", () => {
 
   it("a pick uses nextLevel (no flush); auto hands back with loadLevel, never currentLevel", async () => {
     const { t, hls, changes, q } = await started();
-    expect(t.qualities().map((x) => x.id)).toEqual(["1080p", "720p", "480p"]);
+    expect(t.qualities().map((x) => x.id)).toEqual(["1080p", "720p", "540p", "480p"]);
     hls.writes.length = 0;
 
     q.selected = "720p";
     await t.applyQuality();
-    expect(hls.writes).toEqual([["nextLevel", 1]]); // levels ascending: 480, 720, 1080
-    hls.switched(1);
+    expect(hls.writes).toEqual([["nextLevel", 2]]); // levels ascending: 480, 540, 720, 1080
+    hls.switched(2);
     expect(changes.at(-1)).toEqual({ id: "720p", auto: false });
 
     q.selected = "auto";
     await t.applyQuality();
     expect(hls.writes).toEqual([
-      ["nextLevel", 1],
+      ["nextLevel", 2],
       ["loadLevel", -1],
     ]);
     expect(changes.at(-1)).toEqual({ id: "720p", auto: true });
@@ -285,7 +286,7 @@ describe("HLS route (hls.js)", () => {
     expect(hls.autoLevelCapping).toBe(0);
     q.maxHeight = 720;
     await t.applyQuality();
-    expect(hls.autoLevelCapping).toBe(1);
+    expect(hls.autoLevelCapping).toBe(2);
     q.maxHeight = 240; // below the ladder: the lowest rung, not "uncapped"
     await t.applyQuality();
     expect(hls.autoLevelCapping).toBe(0);
@@ -295,15 +296,15 @@ describe("HLS route (hls.js)", () => {
   });
 
   it("opens the master with q=<allowed ids> and reloads it only when the set changes", async () => {
-    const q = prefs({ allowed: ["540p", "480p"] });
+    const q = prefs({ allowed: ["540p", "480p", "4k"] });
     const t = new HlsViewTransport(sig(), "/d/wide/s1", undefined, WIDE_LADDER, q);
     await t.start("s1", asVideo(el()));
     const hls = FakeHls.instances[0]!;
     const first = new URL(hls.sources[0]!);
     expect(first.searchParams.get("token")).toBe("tok");
-    expect(first.searchParams.get("q")).toBe("480p"); // 540p is not on this ladder
-    hls.parse([480]);
-    expect(t.qualities().map((x) => x.id)).toEqual(["480p"]);
+    expect(first.searchParams.get("q")).toBe("540p,480p"); // "4k" is not on the ladder: ignored
+    hls.parse([480, 540]);
+    expect(t.qualities().map((x) => x.id)).toEqual(["540p", "480p"]);
 
     await t.applyQuality();
     expect(hls.sources).toHaveLength(1);
@@ -323,7 +324,7 @@ describe("HLS route (hls.js)", () => {
     const buffering = vi.fn();
     const { t, hls, changes, q } = await started(prefs({ selected: "1080p" }));
     t.onBuffering(buffering);
-    expect(hls.writes.at(-1)).toEqual(["loadLevel", 2]);
+    expect(hls.writes.at(-1)).toEqual(["loadLevel", 3]);
     hls.handlers.get("e")!(undefined, { fatal: true, response: { code: 404 } });
     expect(q.selected).toBe("auto");
     expect(hls.writes.at(-1)).toEqual(["loadLevel", -1]);
@@ -520,7 +521,7 @@ describe("player quality API", () => {
     const changes: QualityChange[] = [];
     p.on("quality-changed", (c) => changes.push(c));
     await p.play("s1", asVideo(el()));
-    expect(p.qualities.map((q) => q.id)).toEqual(["1080p", "720p", "480p"]);
+    expect(p.qualities.map((q) => q.id)).toEqual(["1080p", "720p", "540p", "480p"]);
     expect(changes).toEqual([{ id: "1080p", auto: true }]);
     await p.stop();
   });
@@ -559,18 +560,18 @@ describe("player quality API", () => {
     p.on("qualities-changed", (l) => lists.push(l.map((q) => q.id)));
     await p.play("s1", asVideo(el()));
 
-    await p.setAllowedQualities(["540p", "480p"]);
-    expect(p.qualities.map((q) => q.id)).toEqual(["480p"]);
-    expect(opened().at(-1)).toBe("/d/fast/s1/480p"); // auto left the disallowed rung
-    await p.setAllowedQualities(["480p"]); // same list: no announcement
+    await p.setAllowedQualities(["540p", "480p"]); // the SportStream web set
+    expect(p.qualities.map((q) => q.id)).toEqual(["540p", "480p"]);
+    expect(opened().at(-1)).toBe("/d/fast/s1/540p"); // auto left the disallowed rung
+    await p.setAllowedQualities(["480p", "540p"]); // same list: no announcement
     await expect(p.setQuality("1080p")).rejects.toThrow(/1080p/);
 
     await p.setAllowedQualities(["4k"]); // matches nothing: all
     await p.setAllowedQualities([]);
     expect(lists).toEqual([
-      ["1080p", "720p", "480p"],
-      ["480p"],
-      ["1080p", "720p", "480p"],
+      ["1080p", "720p", "540p", "480p"],
+      ["540p", "480p"],
+      ["1080p", "720p", "540p", "480p"],
     ]);
     await p.stop();
   });

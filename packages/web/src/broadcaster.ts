@@ -14,7 +14,7 @@ const STATS_INTERVAL_MS = 2000;
  * opted into a ladder-source publish (maxBitrateKbps above the default).
  *
  * Without it the browser picks, and most pick 640x480 — so a tenant whose
- * engine builds a 1080p/720p/480p ladder was transcoding 480p up into "1080p".
+ * engine builds a 1080p/720p/540p/480p ladder was transcoding 480p up into "1080p".
  * `ideal`, never `exact`: a camera that cannot do 1080p30 still opens, at the
  * best it has. Gated on the opt-in so every integrator on the default ceiling
  * keeps the exact capture it had.

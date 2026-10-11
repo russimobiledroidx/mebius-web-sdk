@@ -170,7 +170,7 @@ Teruskan apa adanya — isinya opaque dan Mebius yang mengurutkan serta memilih.
 Opsional: tanpa itu playback tetap jalan, tapi setiap penonton dilayani dari
 origin Mebius, bukan edge terdekat.
 
-### Kualitas (1080p / 720p / 480p)
+### Kualitas (1080p / 720p / 540p / 480p)
 
 Tenant yang di-transcode engine menerima `renditions` di entri `deliveries`
 (`fast` dan `wide`). Teruskan `deliveries` apa adanya — SDK yang membaca ladder-nya:
@@ -180,7 +180,7 @@ player.on("qualities-changed", (qs) => renderMenu(qs)); // [] = sembunyikan menu
 player.on("quality-changed", ({ id, auto }) => showLabel(auto ? `Auto (${id ?? "?"})` : id));
 
 await player.play("my-stream", "#viewer");
-player.qualities;              // [{ id: "1080p", label: "1080p", height: 1080, bitrateKbps: 5000 }, ...]
+player.qualities;              // [{ id: "1080p", label: "1080p", height: 1080, bitrateKbps: 6000 }, ...]
 await player.setQuality("720p");
 await player.setQuality("auto"); // default
 player.setMaxQuality(720);     // "auto" tidak pernah naik di atas 720p; 0/null = tanpa cap
@@ -191,7 +191,7 @@ contoh SportStream di web:
 
 ```ts
 await player.setAllowedQualities(["540p", "480p"]); // sebelum atau sesudah play()
-player.qualities;  // hanya rendition yang diizinkan DAN ada di stream ini → [{ id: "480p", ... }]
+player.qualities;  // hanya rendition yang diizinkan → [{ id: "540p", ... }, { id: "480p", ... }]
 await player.setAllowedQualities(null);             // null atau [] = semua
 ```
 
@@ -219,12 +219,12 @@ await player.setAllowedQualities(null);             // null atau [] = semua
 - Safari iOS: browser yang memilih kualitas di mode `"auto"`; pilihan manual atau
   cap di bawah rendition tertinggi mengunci satu rendition.
 
-Untuk tenant ber-ladder pakai `createBroadcaster({ maxBitrateKbps: 5000 })`: di atas
+Untuk tenant ber-ladder pakai `createBroadcaster({ maxBitrateKbps: 6000 })`: di atas
 default 2500 kbps, broadcaster juga meminta kamera 1920x1080@30 (`ideal`, kamera
 lemah tetap jalan). Tanpa opsi itu capture dan bitrate persis seperti sebelumnya.
 
 Profil encoder resmi dan kontrak `renditions`: stream-engine `docs/INTEGRATION.md`
-§3.1 "Official encoder profile" dan §5.9 "Quality renditions".
+§3.1 "Encoder profiles" dan §5.9 "Quality renditions".
 
 ### `beaconToken` / `beaconUrl` — quality di dashboard
 
