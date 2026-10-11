@@ -43060,10 +43060,11 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      * origin one. Without it this falls back to the origin playlist, which is
      * still correct, just served from our own bandwidth.
      */
-    constructor(signaling, deliveryPath, targetS) {
+    constructor(signaling, deliveryPath, targetS, renditions = []) {
       this.signaling = signaling;
       this.deliveryPath = deliveryPath;
       this.targetS = targetS;
+      this.renditions = renditions;
       this.kind = "hls";
       this.hls = null;
       this.video = null;
@@ -43071,8 +43072,50 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.bufferingCb = null;
       /** Aborts this attempt's element listeners; see start(). */
       this.listeners = null;
+      this.qualityCb = null;
+      /** `"auto"` or a rung id. Survives stop(), so a recovered route keeps the pick. */
+      this.selected = "auto";
+      this.maxHeight = Infinity;
+      /** The playlist start() opened — the master, on a laddered `wide` delivery. */
+      this.url = null;
       /** True when playback only started because the element had to be muted. */
       this.mutedByPolicy = false;
+    }
+    onQualityChanged(cb) {
+      this.qualityCb = cb;
+    }
+    /** Rungs the playlist actually carries, once hls.js has read it. */
+    qualities() {
+      var _a, _b;
+      const levels = (_b = (_a = this.hls) == null ? void 0 : _a.levels) != null ? _b : [];
+      return this.renditions.filter((r) => levels.length === 0 || levels.some((l) => l.height === r.height)).map(toQuality);
+    }
+    currentQuality() {
+      var _a, _b, _c, _d, _e, _f;
+      const auto = this.selected === "auto";
+      if (!this.hls) return { id: (_b = (_a = this.nativeRung()) == null ? void 0 : _a.id) != null ? _b : null, auto };
+      const height = (_d = (_c = this.hls.levels) == null ? void 0 : _c[this.hls.currentLevel]) == null ? void 0 : _d.height;
+      return { id: (_f = (_e = this.renditions.find((r) => r.height === height)) == null ? void 0 : _e.id) != null ? _f : null, auto };
+    }
+    /**
+     * hls.js switches level in place; native playback has no level API, so a pick
+     * there reopens the element on that rung's own playlist (`"auto"` goes back
+     * to the master and Safari's own ABR).
+     */
+    async setQuality(id) {
+      var _a;
+      this.selected = id;
+      if (this.hls) {
+        this.hls.currentLevel = id === "auto" ? -1 : this.levelOf(id);
+        (_a = this.qualityCb) == null ? void 0 : _a.call(this, this.currentQuality());
+        return;
+      }
+      await this.reopenNative();
+    }
+    setMaxQuality(height) {
+      this.maxHeight = height;
+      if (this.hls) this.applyCap();
+      else if (this.selected === "auto") void this.reopenNative();
     }
     onEnded(cb) {
       this.endedCb = cb;
@@ -43103,7 +43146,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         if (!video.canPlayType("application/vnd.apple.mpegurl")) {
           throw mebiusError("CONNECTION_FAILED", "Scale playback is not supported in this browser.");
         }
-        video.src = url;
+        this.url = url;
+        video.src = this.nativeUrl();
         this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
         return;
       }
@@ -43130,9 +43174,60 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         var _a;
         if (data.fatal) (_a = this.bufferingCb) == null ? void 0 : _a.call(this);
       });
+      if (this.renditions.length > 0) {
+        hls.on(Hls2.Events.MANIFEST_PARSED, () => {
+          this.applyCap();
+          if (this.selected !== "auto") hls.currentLevel = this.levelOf(this.selected);
+        });
+        hls.on(Hls2.Events.LEVEL_SWITCHED, () => {
+          var _a;
+          return (_a = this.qualityCb) == null ? void 0 : _a.call(this, this.currentQuality());
+        });
+      }
       hls.loadSource(url);
       hls.attachMedia(video);
       this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
+    }
+    /** hls.js level index for a rung id, matched by height; -1 (auto) if absent. */
+    levelOf(id) {
+      var _a, _b, _c, _d;
+      const height = (_a = this.renditions.find((r) => r.id === id)) == null ? void 0 : _a.height;
+      return (_d = (_c = (_b = this.hls) == null ? void 0 : _b.levels) == null ? void 0 : _c.findIndex((l) => l.height === height)) != null ? _d : -1;
+    }
+    /** `autoLevelCapping` = the highest level within maxHeight (the lowest if none fits). */
+    applyCap() {
+      var _a, _b;
+      const levels = (_a = this.hls) == null ? void 0 : _a.levels;
+      if (!this.hls || !(levels == null ? void 0 : levels.length) || this.renditions.length === 0) return;
+      const byHeight = levels.map((l, i) => ({ height: l.height, i })).sort((a, b) => b.height - a.height);
+      this.hls.autoLevelCapping = Number.isFinite(this.maxHeight) ? ((_b = byHeight.find((l) => l.height <= this.maxHeight)) != null ? _b : byHeight[byHeight.length - 1]).i : -1;
+    }
+    /**
+     * The rung native playback should be pinned to, or `null` for the master.
+     * Native ABR cannot be capped, so under `"auto"` a cap below the top rung
+     * pins the highest rung under it instead — no ABR, but never above the cap.
+     */
+    nativeRung() {
+      const top = Math.max(...this.renditions.map((r) => r.height));
+      if (this.selected === "auto" && top <= this.maxHeight) return null;
+      return pickRung(this.renditions, this.selected, this.maxHeight);
+    }
+    nativeUrl() {
+      var _a;
+      const rung = this.nativeRung();
+      return rung ? this.signaling.deliveryUrl(rung.path) : (_a = this.url) != null ? _a : "";
+    }
+    /** Native only: point the element at the playlist the selection now calls for. */
+    async reopenNative() {
+      var _a;
+      const video = this.video;
+      if (!video || !this.url || this.renditions.length === 0) return;
+      const next = this.nativeUrl();
+      if (video.src !== next) {
+        video.src = next;
+        await playWithAutoplayFallback(video).catch(() => void 0);
+      }
+      (_a = this.qualityCb) == null ? void 0 : _a.call(this, this.currentQuality());
     }
     async stop() {
       var _a, _b;
@@ -43140,6 +43235,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.listeners = null;
       (_b = this.hls) == null ? void 0 : _b.destroy();
       this.hls = null;
+      this.url = null;
       if (this.video) {
         this.video.removeAttribute("src");
         this.video.load();
@@ -43192,6 +43288,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   var BUILD_UP_BELOW = 0.9;
   var AUDIO_RETRY_MS = 2500;
   var UPSTREAM_LATENCY_MS = 800;
+  var STEP_DOWN_STALLS = 2;
+  var STEP_DOWN_WINDOW_MS = 2e4;
   function stalledWithData(video, ms) {
     if (video.currentTime > 0) return Promise.resolve(false);
     return new Promise((resolve) => {
@@ -43228,7 +43326,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     video.playbackRate = 1;
   }
   var FlvViewTransport = class {
-    constructor(signaling, deliveryPath, targetS = DEFAULT_BALANCED_TARGET_S) {
+    constructor(signaling, deliveryPath, targetS = DEFAULT_BALANCED_TARGET_S, renditions = []) {
       this.signaling = signaling;
       this.deliveryPath = deliveryPath;
       this.targetS = targetS;
@@ -43239,10 +43337,29 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.bufferingCb = null;
       /** Aborts this attempt's element listeners; see start(). */
       this.listeners = null;
+      this.qualityCb = null;
+      /** Kept from start() so a rung switch can reopen without re-importing. */
+      this.flvjs = null;
+      /** False once start() fell back to the audio-less retry; a rung switch keeps it. */
+      this.withAudio = true;
+      /** `"auto"` or a rung id. Survives stop(), so a recovered route keeps the pick. */
+      this.selected = "auto";
+      this.maxHeight = Infinity;
+      /** The rung open right now; `null` on the delivery's own path (no ladder). */
+      this.rung = null;
+      /** Start times of recent distinct stalls, for the auto step-down. */
+      this.stallTimes = [];
+      /**
+       * True from open until the picture first moves, and through each stall. The
+       * join and flv.js's repeated `waiting` through one stall must count once or
+       * not at all, or a slow start alone would demote the viewer.
+       */
+      this.inStall = true;
       /** True when playback only started because the element had to be muted. */
       this.mutedByPolicy = false;
       /** Decoded-frame count and timestamp of the previous getStats() call. */
       this.lastFrames = null;
+      this.ladder = [...renditions].sort((a, b) => b.height - a.height);
     }
     onEnded(cb) {
       this.endedCb = cb;
@@ -43250,19 +43367,49 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     onBuffering(cb) {
       this.bufferingCb = cb;
     }
+    onQualityChanged(cb) {
+      this.qualityCb = cb;
+    }
+    qualities() {
+      return this.ladder.map(toQuality);
+    }
+    currentQuality() {
+      var _a, _b;
+      return { id: (_b = (_a = this.rung) == null ? void 0 : _a.id) != null ? _b : null, auto: this.selected === "auto" };
+    }
+    /** A pick reopens flv.js on that rung's path; flv.js cannot switch in place. */
+    async setQuality(id) {
+      this.selected = id;
+      await this.reopen(pickRung(this.ladder, id, this.maxHeight));
+    }
+    setMaxQuality(height) {
+      this.maxHeight = height;
+      if (this.selected === "auto") void this.reopen(pickRung(this.ladder, "auto", height));
+    }
     async start(_streamId, video) {
+      var _a, _b;
       this.video = video;
-      const url = this.signaling.deliveryUrl(this.deliveryPath);
+      this.rung = pickRung(this.ladder, this.selected, this.maxHeight);
+      this.stallTimes = [];
+      this.inStall = true;
+      this.withAudio = true;
+      const url = this.signaling.deliveryUrl((_b = (_a = this.rung) == null ? void 0 : _a.path) != null ? _b : this.deliveryPath);
       this.listeners = new AbortController();
       const { signal } = this.listeners;
       video.addEventListener("ended", () => {
-        var _a;
-        return (_a = this.endedCb) == null ? void 0 : _a.call(this);
+        var _a2;
+        return (_a2 = this.endedCb) == null ? void 0 : _a2.call(this);
       }, { signal });
-      video.addEventListener("waiting", () => {
-        var _a;
-        return (_a = this.bufferingCb) == null ? void 0 : _a.call(this);
-      }, { signal });
+      video.addEventListener(
+        "waiting",
+        () => {
+          var _a2;
+          this.noteStall();
+          (_a2 = this.bufferingCb) == null ? void 0 : _a2.call(this);
+        },
+        { signal }
+      );
+      video.addEventListener("playing", () => this.inStall = false, { signal });
       video.addEventListener("timeupdate", () => syncLiveEdge(video, this.targetS), { signal });
       let mod;
       try {
@@ -43274,11 +43421,13 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       if (!flvjs.isSupported()) {
         throw mebiusError("CONNECTION_FAILED", "Balanced playback is not supported in this browser.");
       }
+      this.flvjs = flvjs;
       this.attachPlayer(flvjs, video, url, true);
       const firstPlay = playWithAutoplayFallback(video);
       firstPlay.catch(() => void 0);
       if (await stalledWithData(video, AUDIO_RETRY_MS)) {
         this.teardownPlayer();
+        this.withAudio = false;
         this.attachPlayer(flvjs, video, url, false);
         this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
         return;
@@ -43305,6 +43454,42 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.player.detachMediaElement();
       this.player.destroy();
       this.player = null;
+    }
+    /**
+     * Switch to `rung` on the element already playing — only the flv.js player is
+     * replaced, so listeners, live-edge sync and the element itself (muted, volume)
+     * carry over and the switch costs one reconnect, not a route walk. Before
+     * start() there is nothing to reopen; start() picks up the stored choice.
+     */
+    async reopen(rung) {
+      var _a, _b, _c;
+      const { video, flvjs } = this;
+      if (!video || !flvjs || rung === this.rung) {
+        (_a = this.qualityCb) == null ? void 0 : _a.call(this, this.currentQuality());
+        return;
+      }
+      this.rung = rung;
+      this.stallTimes = [];
+      this.inStall = true;
+      const { muted, volume } = video;
+      this.teardownPlayer();
+      this.attachPlayer(flvjs, video, this.signaling.deliveryUrl((_b = rung == null ? void 0 : rung.path) != null ? _b : this.deliveryPath), this.withAudio);
+      video.muted = muted;
+      video.volume = volume;
+      (_c = this.qualityCb) == null ? void 0 : _c.call(this, this.currentQuality());
+      await playWithAutoplayFallback(video).catch(() => void 0);
+    }
+    /** Counts a distinct stall and, under "auto", steps down once there are enough. */
+    noteStall() {
+      if (this.inStall) return;
+      this.inStall = true;
+      if (this.selected !== "auto" || !this.rung) return;
+      const now2 = Date.now();
+      this.stallTimes = this.stallTimes.filter((t) => now2 - t < STEP_DOWN_WINDOW_MS);
+      this.stallTimes.push(now2);
+      if (this.stallTimes.length < STEP_DOWN_STALLS) return;
+      const lower = this.ladder[this.ladder.indexOf(this.rung) + 1];
+      if (lower) void this.reopen(lower);
     }
     async stop() {
       var _a;
@@ -43371,6 +43556,15 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   };
 
   // src/internal/transport.ts
+  function toQuality(r) {
+    return { id: r.id, label: r.id, height: r.height, bitrateKbps: r.bitrateKbps };
+  }
+  function pickRung(ladder, selected, maxHeight) {
+    var _a, _b, _c;
+    const desc = [...ladder].sort((a, b) => b.height - a.height);
+    if (selected !== "auto") return (_a = desc.find((r) => r.id === selected)) != null ? _a : null;
+    return (_c = (_b = desc.find((r) => r.height <= maxHeight)) != null ? _b : desc[desc.length - 1]) != null ? _c : null;
+  }
   function createPublishTransport(signaling, maxBitrateKbps) {
     return new WhipPublishTransport(signaling, maxBitrateKbps);
   }
@@ -43384,16 +43578,16 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   function canPlayBuffered() {
     return typeof MediaSource !== "undefined";
   }
-  function transportFor(kind, path, signaling, targetLatencyMs) {
+  function transportFor({ kind, path, renditions = [] }, signaling, targetLatencyMs) {
     const targetS = targetLatencyMs === void 0 ? void 0 : targetLatencyMs / 1e3;
     if (kind === KIND_FAST)
-      return canPlayBuffered() ? onRoute(new FlvViewTransport(signaling, path, targetS), kind) : null;
+      return canPlayBuffered() ? onRoute(new FlvViewTransport(signaling, path, targetS, renditions), kind) : null;
     if (kind === KIND_WIDE || kind === KIND_LOCAL)
-      return onRoute(new HlsViewTransport(signaling, path, targetS), kind);
+      return onRoute(new HlsViewTransport(signaling, path, targetS, renditions), kind);
     return null;
   }
   function createViewCandidates(mode, signaling, deliveries = [], targetLatencyMs) {
-    const fromGateway = (kinds) => deliveries.filter((d) => kinds.includes(d.kind)).map((d) => transportFor(d.kind, d.path, signaling, targetLatencyMs)).filter((t) => t !== null);
+    const fromGateway = (kinds) => deliveries.filter((d) => kinds.includes(d.kind)).map((d) => transportFor(d, signaling, targetLatencyMs)).filter((t) => t !== null);
     const originFallback = onRoute(
       new HlsViewTransport(
         signaling,
@@ -43506,6 +43700,11 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
 
   // src/broadcaster.ts
   var STATS_INTERVAL_MS = 2e3;
+  var DEFAULT_VIDEO_CAPTURE = {
+    width: { ideal: 1920 },
+    height: { ideal: 1080 },
+    frameRate: { ideal: 30 }
+  };
   var MebiusBroadcaster = class extends TypedEmitter {
     /** @internal */
     constructor(signaling, options, telemetry = null, userId) {
@@ -43550,8 +43749,9 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       var _a;
       if (!this.stream) return;
       this.facingMode = this.facingMode === "user" ? "environment" : "user";
+      const video = this.options.video;
       const next = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: this.facingMode },
+        video: __spreadProps(__spreadValues({}, typeof video === "object" ? video : DEFAULT_VIDEO_CAPTURE), { facingMode: this.facingMode }),
         audio: false
       });
       const newTrack = (_a = next.getVideoTracks()[0]) != null ? _a : null;
@@ -43586,7 +43786,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       void video.play().catch(() => void 0);
     }
     async capture() {
-      const video = normalize(this.options.video, true);
+      const video = normalize(this.options.video, DEFAULT_VIDEO_CAPTURE);
       const audio = normalize(this.options.audio, true);
       try {
         return await navigator.mediaDevices.getUserMedia({ video, audio });
@@ -43615,7 +43815,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
   };
   function normalize(c, fallback) {
-    if (c === void 0) return fallback;
+    if (c === void 0 || c === true) return fallback;
     return c;
   }
 
@@ -43986,8 +44186,13 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.video.volume = v;
       this.video.muted = v === 0;
     }
+    /** The delivery route currently playing, or `null` when not playing. See the `route` event. */
+    get route() {
+      var _a, _b;
+      return this.playing ? (_b = (_a = this.transport) == null ? void 0 : _a.route) != null ? _b : null : null;
+    }
     /**
-     * Renditions this stream can actually be switched between.
+     * Renditions this stream can actually be switched between, highest first.
      *
      * Empty means there is exactly one rendition — or a route with no such concept —
      * and a UI should HIDE its quality menu rather than offer a choice that does not
@@ -43995,24 +44200,18 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      * rendition ladder has a menu, and without a programmatic answer the only
      * options were to show a fake one or to delete the feature on a hunch.
      *
-     * It is empty for every Mebius stream today: the engine publishes one rendition
-     * and does no ladder transcoding. The field is here so a client can be written
-     * once, against the honest answer, and keep working unchanged if that ever
-     * changes.
+     * Only streams of a tenant the engine transcodes for have a ladder (it arrives
+     * as `renditions` on the delivery list); every other stream answers empty.
      *
      * The list is per ROUTE, so it is re-read on failover and announced with
      * `qualities-changed`.
      */
-    /** The delivery route currently playing, or `null` when not playing. See the `route` event. */
-    get route() {
-      var _a, _b;
-      return this.playing ? (_b = (_a = this.transport) == null ? void 0 : _a.route) != null ? _b : null : null;
-    }
     get qualities() {
       return this.renditions;
     }
     /**
-     * Choose a rendition, or `"auto"` to let Mebius decide (the default).
+     * Choose a rendition, or `"auto"` to let Mebius decide (the default). The
+     * switch is announced with `quality-changed`.
      *
      * Rejects an id that is not in {@link qualities} instead of silently doing
      * nothing — a UI that asks for a rendition and gets no error would otherwise
@@ -44020,12 +44219,26 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      * keeps running on whatever it is running on.
      */
     async setQuality(id) {
+      var _a, _b;
       if (id !== "auto" && !this.renditions.some((q) => q.id === id)) {
         throw mebiusError(
           "UNKNOWN",
           `Unknown quality "${id}". Pass "auto", or an id from player.qualities.`
         );
       }
+      await ((_b = (_a = this.transport) == null ? void 0 : _a.setQuality) == null ? void 0 : _b.call(_a, id));
+    }
+    /**
+     * Cap `"auto"` at renditions no taller than `height` pixels, e.g. `720` on a
+     * small embed or a metered connection. A manual {@link setQuality} pick is
+     * not capped. Pass `Infinity` to lift the cap.
+     *
+     * Callable before {@link play}: the cap is handed to every route, so it holds
+     * from the first frame and across a failover. No effect without a ladder.
+     */
+    setMaxQuality(height) {
+      var _a;
+      for (const candidate of this.candidates) (_a = candidate.setMaxQuality) == null ? void 0 : _a.call(candidate, height);
     }
     /**
      * Wall-clock time (Unix ms) currently on screen, or `null` when the active
@@ -44052,10 +44265,17 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      * which route happened to win.
      */
     publishQualities() {
-      this.renditions = Object.freeze([]);
+      var _a, _b, _c, _d, _e;
+      this.renditions = Object.freeze([...(_c = (_b = (_a = this.transport) == null ? void 0 : _a.qualities) == null ? void 0 : _b.call(_a)) != null ? _c : []]);
       this.emit("qualities-changed", this.renditions);
+      const current = (_e = (_d = this.transport) == null ? void 0 : _d.currentQuality) == null ? void 0 : _e.call(_d);
+      if (current && this.renditions.length > 0) this.emit("quality-changed", current);
     }
     attach(transport) {
+      var _a;
+      (_a = transport.onQualityChanged) == null ? void 0 : _a.call(transport, (change) => {
+        if (this.transport === transport && this.renditions.length > 0) this.emit("quality-changed", change);
+      });
       transport.onEnded(() => {
         if (this.transport !== transport) return;
         void this.recover();

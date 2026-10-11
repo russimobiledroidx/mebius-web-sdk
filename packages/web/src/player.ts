@@ -308,8 +308,13 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     this.video.muted = v === 0;
   }
 
+  /** The delivery route currently playing, or `null` when not playing. See the `route` event. */
+  get route(): PlaybackRoute | null {
+    return this.playing ? (this.transport?.route ?? null) : null;
+  }
+
   /**
-   * Renditions this stream can actually be switched between.
+   * Renditions this stream can actually be switched between, highest first.
    *
    * Empty means there is exactly one rendition — or a route with no such concept —
    * and a UI should HIDE its quality menu rather than offer a choice that does not
@@ -317,25 +322,19 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
    * rendition ladder has a menu, and without a programmatic answer the only
    * options were to show a fake one or to delete the feature on a hunch.
    *
-   * It is empty for every Mebius stream today: the engine publishes one rendition
-   * and does no ladder transcoding. The field is here so a client can be written
-   * once, against the honest answer, and keep working unchanged if that ever
-   * changes.
+   * Only streams of a tenant the engine transcodes for have a ladder (it arrives
+   * as `renditions` on the delivery list); every other stream answers empty.
    *
    * The list is per ROUTE, so it is re-read on failover and announced with
    * `qualities-changed`.
    */
-  /** The delivery route currently playing, or `null` when not playing. See the `route` event. */
-  get route(): PlaybackRoute | null {
-    return this.playing ? (this.transport?.route ?? null) : null;
-  }
-
   get qualities(): readonly MebiusQuality[] {
     return this.renditions;
   }
 
   /**
-   * Choose a rendition, or `"auto"` to let Mebius decide (the default).
+   * Choose a rendition, or `"auto"` to let Mebius decide (the default). The
+   * switch is announced with `quality-changed`.
    *
    * Rejects an id that is not in {@link qualities} instead of silently doing
    * nothing — a UI that asks for a rendition and gets no error would otherwise
@@ -349,9 +348,21 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
         `Unknown quality "${id}". Pass "auto", or an id from player.qualities.`,
       );
     }
-    // With one rendition there is nothing to switch to, so an accepted call is a
-    // no-op. No state is kept for it: an unread "selected id" would be a second
-    // source of truth to keep in step with the route, for no reader.
+    // With no ladder there is nothing to switch to, and the route has no such
+    // method or treats the call as a no-op.
+    await this.transport?.setQuality?.(id);
+  }
+
+  /**
+   * Cap `"auto"` at renditions no taller than `height` pixels, e.g. `720` on a
+   * small embed or a metered connection. A manual {@link setQuality} pick is
+   * not capped. Pass `Infinity` to lift the cap.
+   *
+   * Callable before {@link play}: the cap is handed to every route, so it holds
+   * from the first frame and across a failover. No effect without a ladder.
+   */
+  setMaxQuality(height: number): void {
+    for (const candidate of this.candidates) candidate.setMaxQuality?.(height);
   }
 
   /**
@@ -379,14 +390,20 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
    * which route happened to win.
    */
   private publishQualities(): void {
-    // No Mebius route exposes a ladder — the engine publishes a single rendition
-    // (`hlsVariant: lowLatency`, no ABR). Empty is the truthful answer, and this is
-    // the one place that has to change if that stops being true.
-    this.renditions = Object.freeze([]);
+    this.renditions = Object.freeze([...(this.transport?.qualities?.() ?? [])]);
     this.emit("qualities-changed", this.renditions);
+    // What is on screen now, for a UI that labels "Auto (720p)". Only on a ladder:
+    // a stream with nothing to choose has nothing to announce.
+    const current = this.transport?.currentQuality?.();
+    if (current && this.renditions.length > 0) this.emit("quality-changed", current);
   }
 
   private attach(transport: ViewTransport): void {
+    transport.onQualityChanged?.((change) => {
+      // A candidate still proving itself may switch level before it is
+      // accepted; publishQualities announces the state it was accepted in.
+      if (this.transport === transport && this.renditions.length > 0) this.emit("quality-changed", change);
+    });
     transport.onEnded(() => {
       // Only the route currently serving may end playback. A route we already
       // abandoned firing late must not close a stream that is playing fine.

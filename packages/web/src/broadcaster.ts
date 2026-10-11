@@ -9,6 +9,21 @@ import type { BroadcasterOptions, MediaConstraint, ViewTarget } from "./types.js
 const STATS_INTERVAL_MS = 2000;
 
 /**
+ * What the camera is asked for when the app states no video constraints.
+ *
+ * Without it the browser picks, and most pick 640x480 — so a tenant whose
+ * engine builds a 1080p/720p/480p ladder was transcoding 480p up into "1080p".
+ * `ideal`, never `exact`: a camera that cannot do 1080p30 still opens, at the
+ * best it has. What a broadcast COSTS is still decided by maxBitrateKbps, not
+ * by this.
+ */
+const DEFAULT_VIDEO_CAPTURE: MediaTrackConstraints = {
+  width: { ideal: 1920 },
+  height: { ideal: 1080 },
+  frameRate: { ideal: 30 },
+};
+
+/**
  * Publishes the local camera/microphone to a Mebius stream.
  *
  * Create one with {@link MebiusClient.createBroadcaster}, then
@@ -67,8 +82,9 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
   async switchCamera(): Promise<void> {
     if (!this.stream) return;
     this.facingMode = this.facingMode === "user" ? "environment" : "user";
+    const video = this.options.video;
     const next = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: this.facingMode },
+      video: { ...(typeof video === "object" ? video : DEFAULT_VIDEO_CAPTURE), facingMode: this.facingMode },
       audio: false,
     });
     const newTrack = next.getVideoTracks()[0] ?? null;
@@ -105,7 +121,7 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
   }
 
   private async capture(): Promise<MediaStream> {
-    const video = normalize(this.options.video, true);
+    const video = normalize(this.options.video, DEFAULT_VIDEO_CAPTURE);
     const audio = normalize(this.options.audio, true);
     try {
       return await navigator.mediaDevices.getUserMedia({ video, audio });
@@ -135,7 +151,8 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
   }
 }
 
-function normalize(c: MediaConstraint | undefined, fallback: boolean): boolean | MediaTrackConstraints {
-  if (c === undefined) return fallback;
+/** `undefined` and a bare `true` both mean "the default"; anything else is the app's own choice. */
+function normalize(c: MediaConstraint | undefined, fallback: MediaConstraint): MediaConstraint {
+  if (c === undefined || c === true) return fallback;
   return c;
 }

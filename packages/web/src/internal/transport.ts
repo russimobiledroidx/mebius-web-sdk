@@ -4,7 +4,16 @@
  * The public API never names a transport; it only asks for a playback *mode*.
  * This factory maps a mode to the right hidden delivery mechanism.
  */
-import type { BroadcastStats, MebiusDelivery, PlaybackMode, PlaybackRoute, PlaybackStats } from "../types.js";
+import type {
+  BroadcastStats,
+  MebiusDelivery,
+  MebiusQuality,
+  MebiusRendition,
+  PlaybackMode,
+  PlaybackRoute,
+  PlaybackStats,
+  QualityChange,
+} from "../types.js";
 import type { SignalingClient } from "./signaling.js";
 import { WhipPublishTransport } from "./publish-transport.js";
 import { WhepViewTransport, DEFAULT_REALTIME_TARGET_MS } from "./ll-view-transport.js";
@@ -53,6 +62,40 @@ export interface ViewTransport {
    * caption at the wrong moment is worse than showing it late.
    */
   playheadEpochMs?(): number | null;
+  /**
+   * Rendition ladder control. Present only on routes that can carry one, and
+   * every one of them answers "nothing to choose" (an empty list, a no-op set)
+   * when the delivery came without renditions — so a route with no ladder
+   * behaves exactly as it did before ladders existed.
+   */
+  qualities?(): readonly MebiusQuality[];
+  currentQuality?(): QualityChange;
+  /** `id` is already validated against qualities() by the player. */
+  setQuality?(id: string): Promise<void>;
+  /** Cap for automatic selection, in pixels of height. Stored even before start(). */
+  setMaxQuality?(height: number): void;
+  onQualityChanged?(cb: (change: QualityChange) => void): void;
+}
+
+/** Public shape of a rung: the path stays internal. */
+export function toQuality(r: MebiusRendition): MebiusQuality {
+  return { id: r.id, label: r.id, height: r.height, bitrateKbps: r.bitrateKbps };
+}
+
+/**
+ * The rung to open for a selection: the one picked by id, or under `"auto"` the
+ * highest that fits under the cap — the lowest when none does, since a cap
+ * below the whole ladder still has to play something. `null` means no ladder:
+ * open the delivery's own path.
+ */
+export function pickRung(
+  ladder: readonly MebiusRendition[],
+  selected: string,
+  maxHeight: number,
+): MebiusRendition | null {
+  const desc = [...ladder].sort((a, b) => b.height - a.height);
+  if (selected !== "auto") return desc.find((r) => r.id === selected) ?? null;
+  return desc.find((r) => r.height <= maxHeight) ?? desc[desc.length - 1] ?? null;
 }
 
 export function createPublishTransport(
@@ -83,16 +126,17 @@ function canPlayBuffered(): boolean {
 }
 
 function transportFor(
-  kind: string,
-  path: string,
+  { kind, path, renditions = [] }: MebiusDelivery,
   signaling: SignalingClient,
   targetLatencyMs?: number,
 ): ViewTransport | null {
   const targetS = targetLatencyMs === undefined ? undefined : targetLatencyMs / 1000;
   if (kind === KIND_FAST)
-    return canPlayBuffered() ? onRoute(new FlvViewTransport(signaling, path, targetS), kind) : null;
+    return canPlayBuffered()
+      ? onRoute(new FlvViewTransport(signaling, path, targetS, renditions), kind)
+      : null;
   if (kind === KIND_WIDE || kind === KIND_LOCAL)
-    return onRoute(new HlsViewTransport(signaling, path, targetS), kind);
+    return onRoute(new HlsViewTransport(signaling, path, targetS, renditions), kind);
   // An unknown kind is a newer gateway talking to an older SDK. Skip it rather
   // than guess: the list is ordered, so the next entry is the intended fallback.
   return null;
@@ -123,7 +167,7 @@ export function createViewCandidates(
   const fromGateway = (kinds: readonly string[]): ViewTransport[] =>
     deliveries
       .filter((d) => kinds.includes(d.kind))
-      .map((d) => transportFor(d.kind, d.path, signaling, targetLatencyMs))
+      .map((d) => transportFor(d, signaling, targetLatencyMs))
       .filter((t): t is ViewTransport => t !== null);
 
   // Every mode ends with the origin playlist, reachable with no delivery list at

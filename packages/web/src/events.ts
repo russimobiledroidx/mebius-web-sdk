@@ -1,5 +1,12 @@
 import type { MebiusError } from "./errors.js";
-import type { BroadcastStats, CaptionSegment, MebiusQuality, PlaybackRoute, PlaybackStats } from "./types.js";
+import type {
+  BroadcastStats,
+  CaptionSegment,
+  MebiusQuality,
+  PlaybackRoute,
+  PlaybackStats,
+  QualityChange,
+} from "./types.js";
 
 // NOTE: these are `type` aliases (not interfaces) so they satisfy the
 // `Record<string, unknown>` constraint on TypedEmitter — TS only treats object
@@ -36,9 +43,16 @@ export type PlayerEventMap = {
   /**
    * The selectable renditions changed, because the player moved to a different
    * delivery route. Fires once per accepted route, carrying the list as it now
-   * stands — today always empty, since no route offers a ladder.
+   * stands — empty on a stream with no rendition ladder.
    */
   "qualities-changed": readonly MebiusQuality[];
+  /**
+   * The rendition on screen changed: a manual pick, an automatic switch, or the
+   * route being accepted. `id` is the rendition now playing, or `null` when the
+   * route cannot say (no ladder, or the source quality). `auto` is whether
+   * Mebius is choosing.
+   */
+  "quality-changed": QualityChange;
   /**
    * The player settled on a delivery route: at start, and again whenever
    * recovery fails over to a different one. Fires before the matching `playing`.

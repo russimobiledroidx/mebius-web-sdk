@@ -170,6 +170,41 @@ Teruskan apa adanya — isinya opaque dan Mebius yang mengurutkan serta memilih.
 Opsional: tanpa itu playback tetap jalan, tapi setiap penonton dilayani dari
 origin Mebius, bukan edge terdekat.
 
+### Kualitas (1080p / 720p / 480p)
+
+Tenant yang di-transcode engine menerima `renditions` di entri `deliveries`
+(`fast` dan `wide`). Teruskan `deliveries` apa adanya — SDK yang membaca ladder-nya:
+
+```ts
+player.on("qualities-changed", (qs) => renderMenu(qs)); // [] = sembunyikan menu
+player.on("quality-changed", ({ id, auto }) => showLabel(auto ? `Auto (${id ?? "?"})` : id));
+
+await player.play("my-stream", "#viewer");
+player.qualities;              // [{ id: "1080p", label: "1080p", height: 1080, bitrateKbps: 5000 }, ...]
+await player.setQuality("720p");
+await player.setQuality("auto"); // default
+player.setMaxQuality(720);     // "auto" tidak pernah naik di atas 720p; boleh dipanggil sebelum play()
+```
+
+- `qualities` kosong kalau delivery tidak membawa `renditions` — perilaku playback
+  persis seperti sebelumnya.
+- `quality-changed`: `id` = rendition yang sedang tayang, `null` kalau rute tidak
+  bisa menyebutnya (mis. ABR native Safari). Bisa terbit lebih dari sekali per pilihan.
+- Rute `wide`: kualitas menyesuaikan jaringan secara kontinu; pilihan manual
+  berpindah di tempat tanpa membuka ulang stream.
+- Rute `fast`: `"auto"` mulai dari rendition tertinggi ≤ cap dan turun satu
+  tingkat setelah 2 stall dalam 20 detik (tidak naik sendiri); pilihan manual
+  membuka ulang stream di rendition itu (~1 detik, mute/volume tetap).
+- Safari iOS: browser yang memilih kualitas di mode `"auto"`; pilihan manual atau
+  cap di bawah rendition tertinggi mengunci satu rendition.
+
+Broadcaster web kini meminta kamera 1920x1080@30 (`ideal`, kamera lemah tetap
+jalan). Plafon bitrate default tetap 2500 kbps; untuk tenant ber-ladder pakai
+`createBroadcaster({ maxBitrateKbps: 5000 })`.
+
+Profil encoder resmi dan kontrak `renditions`: stream-engine `docs/INTEGRATION.md`
+§3.1 "Official encoder profile" dan §5.9 "Quality renditions".
+
 ### `beaconToken` / `beaconUrl` — quality di dashboard
 
 Response token juga membawa dua field opsional. Teruskan keduanya dan SDK
@@ -273,7 +308,7 @@ tidak membawa bundle mode lain.
 |---|---|---|---|
 | `Mebius` | `init({ appId, gateway })` | `void` | Konfigurasi sekali di awal. |
 | `Mebius` | `connect({ token, deliveries? })` | `MebiusClient` | Buka koneksi. |
-| `MebiusClient` | `createBroadcaster({ video?, audio? })` | `MebiusBroadcaster` | |
+| `MebiusClient` | `createBroadcaster({ video?, audio?, maxBitrateKbps? })` | `MebiusBroadcaster` | `maxBitrateKbps` default 2500. |
 | `MebiusClient` | `createPlayer({ mode? })` | `MebiusPlayer` | `mode: "auto" \| "low-latency" \| "balanced" \| "scale"`, default `"auto"` |
 | `MebiusClient` | `createMonitor()` | `MebiusPlayer` | Player untuk stream yang kamu ajak interaksi. |
 | `MebiusClient` | `disconnect(reason?)` | `void` | |
@@ -288,6 +323,7 @@ tidak membawa bundle mode lain.
 | `MebiusPlayer` | `setVolume(0..1)` | `void` | |
 | `MebiusPlayer` | `qualities` | `MebiusQuality[]` | Rendition yang benar-benar bisa dipilih. `[]` = satu rendition, sembunyikan menu kualitas. |
 | `MebiusPlayer` | `setQuality("auto" \| id)` | `Promise<void>` | Tolak id di luar `qualities`; playback tidak terganggu. |
+| `MebiusPlayer` | `setMaxQuality(height)` | `void` | Cap untuk `"auto"`, dalam piksel tinggi. |
 
 ### Events
 
@@ -304,6 +340,7 @@ tidak membawa bundle mode lain.
 | player | `ended` | — |
 | player | `stats` | `{ bitrateKbps, framesPerSecond, latencyMs? }` |
 | player | `qualities-changed` | `MebiusQuality[]` | terbit sekali tiap rute playback diterima |
+| player | `quality-changed` | `{ id: string \| null, auto }` | rendition yang tayang berubah (hanya kalau ada ladder) |
 
 ```ts
 client.on("connected", () => {});

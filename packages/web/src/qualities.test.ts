@@ -7,11 +7,11 @@ import type { MebiusQuality, PlaybackStats } from "./types.js";
 /**
  * CR-2: an honest answer about renditions.
  *
- * Mebius publishes one rendition and transcodes no ladder, so the only correct
- * answer today is "there is nothing to choose". These tests pin that answer down
+ * A stream whose delivery carries no rendition ladder has one rendition, so the
+ * only correct answer is "there is nothing to choose". These tests pin that answer down
  * so a UI can hide its quality menu on the data instead of on a hunch — and pin
  * down that asking for a rendition that does not exist fails loudly without
- * taking playback with it.
+ * taking playback with it. The ladder itself is in internal/quality-ladder.test.ts.
  */
 
 const GATEWAY = "https://gateway.example";
@@ -75,7 +75,7 @@ describe("MebiusPlayer.qualities", () => {
     expect(playerWith([]).qualities).toEqual([]);
   });
 
-  it("is empty on a single-rendition stream, which is every Mebius stream today", async () => {
+  it("is empty on a single-rendition stream", async () => {
     const p = playerWith([fakeTransport({ delivers: true })]);
     await p.play("s1", videoEl());
     expect(p.qualities).toEqual([]);
