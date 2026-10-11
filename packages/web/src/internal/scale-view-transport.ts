@@ -5,10 +5,19 @@
  * gateway. hls.js is loaded lazily; Safari plays the playlist natively.
  * Hidden from the public API.
  */
-import type { PlaybackStats } from "../types.js";
+import type { MebiusQuality, MebiusRendition, PlaybackStats, QualityChange } from "../types.js";
 import { mebiusError } from "../errors.js";
 import type { SignalingClient } from "./signaling.js";
-import type { ViewTransport } from "./transport.js";
+import {
+  allowedRungs,
+  defaultQualityPrefs,
+  isMissingRung,
+  pickRung,
+  pinnedRung,
+  toQuality,
+  type QualityPrefs,
+  type ViewTransport,
+} from "./transport.js";
 import { playWithAutoplayFallback } from "./autoplay.js";
 
 // Loaded on demand so it never weighs down low-latency-only apps.
@@ -91,6 +100,16 @@ export class HlsViewTransport implements ViewTransport {
   private bufferingCb: (() => void) | null = null;
   /** Aborts this attempt's element listeners; see start(). */
   private listeners: AbortController | null = null;
+  private qualityCb: ((change: QualityChange) => void) | null = null;
+  private qualitiesCb: (() => void) | null = null;
+  /** Last change handed to qualityCb, so an unchanged state is not re-announced. */
+  private announced = "";
+  /** The playlist address before any `q` filter; see masterUrl(). */
+  private url: string | null = null;
+  /** The address actually loaded, so an allowed-set change reloads only on a real change. */
+  private loadedUrl: string | null = null;
+  /** hls.js level pinned by a pick, or -1 under auto. */
+  private level = -1;
 
   /**
    * deliveryPath, when given, is a gateway-relative path from the gateway's own
@@ -102,7 +121,68 @@ export class HlsViewTransport implements ViewTransport {
     private readonly signaling: SignalingClient,
     private readonly deliveryPath?: string,
     private readonly targetS?: number,
+    /**
+     * The delivery's ladder. On hls.js the master playlist already lists the
+     * same rungs as levels; this is what names them (matched by height) and
+     * what native playback switches between. Empty: no ladder, nothing changes.
+     */
+    private readonly renditions: readonly MebiusRendition[] = [],
+    /** Shared with the player and every other route; see QualityPrefs. */
+    private readonly prefs: QualityPrefs = defaultQualityPrefs(),
   ) {}
+
+  onQualityChanged(cb: (change: QualityChange) => void): void {
+    this.qualityCb = cb;
+  }
+
+  onQualitiesChanged(cb: () => void): void {
+    this.qualitiesCb = cb;
+  }
+
+  /** Allowed rungs the playlist actually carries, once hls.js has read it. */
+  qualities(): readonly MebiusQuality[] {
+    if (this.renditions.length === 0) return [];
+    const levels = this.hls?.levels ?? [];
+    return allowedRungs(this.renditions, this.prefs.allowed)
+      .filter((r) => levels.length === 0 || levels.some((l) => l.height === r.height))
+      .map(toQuality);
+  }
+
+  currentQuality(): QualityChange {
+    if (!this.hls) {
+      return { id: this.nativeRung()?.id ?? null, auto: pinnedRung(this.renditions, this.prefs) === null };
+    }
+    const height = this.hls.levels?.[this.hls.currentLevel]?.height;
+    return { id: this.renditions.find((r) => r.height === height)?.id ?? null, auto: this.level === -1 };
+  }
+
+  /**
+   * hls.js switches level in place and without flushing what is buffered:
+   * `nextLevel` for a pick, `loadLevel = -1` to hand back to ABR. A changed
+   * allowed set reloads the master with its new `q` filter instead. Native
+   * playback has no level API, so there the element is pointed at the rung's
+   * own playlist, or back at the master for auto.
+   */
+  async applyQuality(): Promise<void> {
+    if (this.renditions.length === 0 || !this.video) return;
+    if (!this.hls) return this.reopenNative();
+    const url = this.masterUrl();
+    if (url !== this.loadedUrl) {
+      // MANIFEST_PARSED re-applies the cap and any pick to the new level list.
+      this.loadedUrl = url;
+      this.hls.loadSource(url);
+      return;
+    }
+    this.applyCap();
+    const level = this.pinnedLevel();
+    if (level === this.level) return;
+    this.level = level;
+    if (level === -1) this.hls.loadLevel = -1;
+    else this.hls.nextLevel = level;
+    // Announces the new mode now; LEVEL_SWITCHED announces again once the
+    // picture actually changes rung.
+    this.announce();
+  }
 
   onEnded(cb: () => void): void {
     this.endedCb = cb;
@@ -114,9 +194,11 @@ export class HlsViewTransport implements ViewTransport {
 
   async start(streamId: string, video: HTMLVideoElement): Promise<void> {
     this.video = video;
-    const url = this.deliveryPath
+    this.url = this.deliveryPath
       ? this.signaling.deliveryUrl(this.deliveryPath)
       : this.signaling.scalePlaylistUrl(streamId);
+    this.level = -1;
+    this.announced = "";
 
     // Same reason as the FLV route: every candidate shares one element, so a
     // failed attempt's listeners must not outlive it.
@@ -152,7 +234,20 @@ export class HlsViewTransport implements ViewTransport {
       // with no hook to re-stamp it — so a token refresh cannot reach this path.
       // A session here lives as long as its token, which is why the gateway-side
       // credential lifetime still matters for browsers that land on it.
-      video.src = url;
+      if (this.renditions.length > 0) {
+        // A pinned rung the vendor never produced fails to load; drop the pin,
+        // not the route, and go back to the master.
+        video.addEventListener(
+          "error",
+          () => {
+            if (!pinnedRung(this.renditions, this.prefs)) return;
+            this.prefs.selected = "auto";
+            void this.reopenNative();
+          },
+          { signal },
+        );
+      }
+      video.src = this.nativeUrl();
       this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
       return;
     }
@@ -205,11 +300,114 @@ export class HlsViewTransport implements ViewTransport {
     });
     this.hls = hls;
     hls.on(Hls.Events.ERROR, (_evt, data) => {
+      // A pinned rung the vendor never produced (the source was smaller than
+      // it) answers 403/404 on its playlist: drop the pin, not the route. Only
+      // a playlist that never loaded: a segment 404, an expired-token 403, or
+      // a live refresh failing on a level that did load is not that.
+      if (
+        this.level !== -1 &&
+        data.details === Hls.ErrorDetails.LEVEL_LOAD_ERROR &&
+        isMissingRung(data.response?.code) &&
+        !hls.levels[data.level ?? -1]?.details
+      ) {
+        this.prefs.selected = "auto";
+        void this.applyQuality();
+        return;
+      }
       if (data.fatal) this.bufferingCb?.();
     });
+    if (this.renditions.length > 0) {
+      // Levels only exist once the master is parsed; a cap or pick made before
+      // that (or carried over from a previous open) is applied here. loadLevel
+      // pins from the first fragment without a switch.
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        this.applyCap();
+        this.level = this.pinnedLevel();
+        hls.loadLevel = this.level;
+        this.announce();
+        // A reloaded master (a changed allowed set) can list different rungs.
+        this.qualitiesCb?.();
+      });
+      hls.on(Hls.Events.LEVEL_SWITCHED, () => this.announce());
+    }
+    const url = this.masterUrl();
+    this.loadedUrl = url;
     hls.loadSource(url);
     hls.attachMedia(video);
     this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
+  }
+
+  /**
+   * The playlist to open. With an allowed set on a laddered delivery it carries
+   * `q=<ids>`, and the gateway leaves every other variant out of the master —
+   * so auto cannot pick a rung the app ruled out, on hls.js and Safari alike.
+   * Without a ladder this is exactly the address it always was.
+   */
+  private masterUrl(): string {
+    const url = this.url ?? "";
+    if (this.renditions.length === 0 || !this.prefs.allowed) return url;
+    const ids = allowedRungs(this.renditions, this.prefs.allowed).map((r) => r.id);
+    if (ids.length === this.renditions.length) return url;
+    return `${url}${url.includes("?") ? "&" : "?"}q=${encodeURIComponent(ids.join(","))}`;
+  }
+
+  /** hls.js level of the pick, matched by height; -1 under auto or when the pick is not listed. */
+  private pinnedLevel(): number {
+    const height = pinnedRung(this.renditions, this.prefs)?.height;
+    if (height === undefined) return -1;
+    return this.hls?.levels?.findIndex((l) => l.height === height) ?? -1;
+  }
+
+  /** `autoLevelCapping` = the highest level within the cap (the lowest if none fits). */
+  private applyCap(): void {
+    const levels = this.hls?.levels;
+    if (!this.hls || !levels?.length || this.renditions.length === 0) return;
+    const max = this.prefs.maxHeight;
+    const byHeight = levels.map((l, i) => ({ height: l.height, i })).sort((a, b) => b.height - a.height);
+    this.hls.autoLevelCapping = Number.isFinite(max)
+      ? (byHeight.find((l) => l.height <= max) ?? byHeight[byHeight.length - 1]!).i
+      : -1;
+  }
+
+  private announce(): void {
+    const change = this.currentQuality();
+    const key = `${change.id}|${change.auto}`;
+    if (key === this.announced) return;
+    this.announced = key;
+    this.qualityCb?.(change);
+  }
+
+  /**
+   * The rung native playback should be pinned to, or `null` for the master.
+   * Native ABR cannot be capped, so under auto a cap below the top allowed rung
+   * pins the highest rung under it instead — no ABR, but never above the cap.
+   */
+  private nativeRung(): MebiusRendition | null {
+    if (this.renditions.length === 0) return null;
+    const top = allowedRungs(this.renditions, this.prefs.allowed)[0]!;
+    if (!pinnedRung(this.renditions, this.prefs) && top.height <= this.prefs.maxHeight) return null;
+    return pickRung(this.renditions, this.prefs);
+  }
+
+  private nativeUrl(): string {
+    const rung = this.nativeRung();
+    return rung ? this.signaling.deliveryUrl(rung.path) : this.masterUrl();
+  }
+
+  /** Native only: point the element at the playlist the selection now calls for. */
+  private async reopenNative(): Promise<void> {
+    const video = this.video;
+    if (!video || !this.url || this.renditions.length === 0) return;
+    const next = this.nativeUrl();
+    if (video.src !== next) {
+      video.src = next;
+      try {
+        this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
+      } catch {
+        // Left to the player's stall watchdog, as on every other route.
+      }
+    }
+    this.announce();
   }
 
   /** True when playback only started because the element had to be muted. */
@@ -220,6 +418,8 @@ export class HlsViewTransport implements ViewTransport {
     this.listeners = null;
     this.hls?.destroy();
     this.hls = null;
+    this.url = null;
+    this.loadedUrl = null;
     if (this.video) {
       this.video.removeAttribute("src");
       this.video.load();

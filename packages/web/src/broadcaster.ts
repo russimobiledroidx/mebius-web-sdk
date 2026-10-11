@@ -3,10 +3,27 @@ import { TypedEmitter, type BroadcasterEventMap } from "./events.js";
 import { resolveVideoElement } from "./internal/view-target.js";
 import type { SignalingClient } from "./internal/signaling.js";
 import { createPublishTransport, type PublishTransport } from "./internal/transport.js";
+import { DEFAULT_MAX_BITRATE_KBPS } from "./internal/publish-transport.js";
 import { QoeReporter, type TelemetryTarget } from "./internal/telemetry.js";
 import type { BroadcasterOptions, MediaConstraint, ViewTarget } from "./types.js";
 
 const STATS_INTERVAL_MS = 2000;
+
+/**
+ * What the camera is asked for when the app states no video constraints AND has
+ * opted into a ladder-source publish (maxBitrateKbps above the default).
+ *
+ * Without it the browser picks, and most pick 640x480 — so a tenant whose
+ * engine builds a 1080p/720p/540p/480p ladder was transcoding 480p up into "1080p".
+ * `ideal`, never `exact`: a camera that cannot do 1080p30 still opens, at the
+ * best it has. Gated on the opt-in so every integrator on the default ceiling
+ * keeps the exact capture it had.
+ */
+const DEFAULT_VIDEO_CAPTURE: MediaTrackConstraints = {
+  width: { ideal: 1920 },
+  height: { ideal: 1080 },
+  frameRate: { ideal: 30 },
+};
 
 /**
  * Publishes the local camera/microphone to a Mebius stream.
@@ -68,7 +85,7 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
     if (!this.stream) return;
     this.facingMode = this.facingMode === "user" ? "environment" : "user";
     const next = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: this.facingMode },
+      video: { ...this.switchBase(), facingMode: this.facingMode },
       audio: false,
     });
     const newTrack = next.getVideoTracks()[0] ?? null;
@@ -104,8 +121,23 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
     void video.play().catch(() => undefined);
   }
 
+  /** Opted into publishing a ladder source; see DEFAULT_VIDEO_CAPTURE. */
+  private get ladderSource(): boolean {
+    return (this.options.maxBitrateKbps ?? 0) > DEFAULT_MAX_BITRATE_KBPS;
+  }
+
+  /**
+   * What a camera switch asks for besides the facing. Without the opt-in this is
+   * nothing, exactly as before; with it, the app's own constraints win over the
+   * 1080p default rather than being replaced by it.
+   */
+  private switchBase(): MediaTrackConstraints {
+    if (!this.ladderSource) return {};
+    return typeof this.options.video === "object" ? this.options.video : DEFAULT_VIDEO_CAPTURE;
+  }
+
   private async capture(): Promise<MediaStream> {
-    const video = normalize(this.options.video, true);
+    const video = normalize(this.options.video, this.ladderSource ? DEFAULT_VIDEO_CAPTURE : true);
     const audio = normalize(this.options.audio, true);
     try {
       return await navigator.mediaDevices.getUserMedia({ video, audio });
@@ -135,7 +167,8 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
   }
 }
 
-function normalize(c: MediaConstraint | undefined, fallback: boolean): boolean | MediaTrackConstraints {
-  if (c === undefined) return fallback;
+/** `undefined` and a bare `true` both mean "the default"; anything else is the app's own choice. */
+function normalize(c: MediaConstraint | undefined, fallback: MediaConstraint): MediaConstraint {
+  if (c === undefined || c === true) return fallback;
   return c;
 }

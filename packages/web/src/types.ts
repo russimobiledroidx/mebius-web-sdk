@@ -28,6 +28,21 @@ export interface MebiusDelivery {
   kind: string;
   /** A Mebius-relative path. Opaque to your app; Mebius resolves it. */
   path: string;
+  /**
+   * The rendition ladder this route also serves, on tenants the engine
+   * transcodes for. Absent means one rendition, and playback behaves exactly as
+   * it did before ladders existed. Pass it through like the rest of the entry.
+   */
+  renditions?: MebiusRendition[];
+}
+
+/** One rung of a delivery's ladder, as the gateway sends it. Opaque to your app. */
+export interface MebiusRendition {
+  id: string;
+  height: number;
+  bitrateKbps: number;
+  /** Gateway-relative path, resolved and tokened exactly like {@link MebiusDelivery.path}. */
+  path: string;
 }
 
 /** Options for {@link Mebius.connect}. */
@@ -82,7 +97,12 @@ export type MediaConstraint = boolean | MediaTrackConstraints;
 
 /** Options for {@link MebiusClient.createBroadcaster}. */
 export interface BroadcasterOptions {
-  /** Capture video. Defaults to `true`. */
+  /**
+   * Capture video. Defaults to `true`. With {@link maxBitrateKbps} above the
+   * default (a laddered tenant), the default instead asks the camera for
+   * 1920x1080 at 30fps as an `ideal` (a weaker camera opens at its best). Pass
+   * your own constraints to choose differently.
+   */
   video?: MediaConstraint;
   /** Capture audio. Defaults to `true`. */
   audio?: MediaConstraint;
@@ -102,6 +122,11 @@ export interface BroadcasterOptions {
    * the encoder still chooses how many bits to spend describing it, and
    * high-motion content (sport above all) makes it spend near the top of its
    * range.
+   *
+   * A tenant whose engine transcodes a 1080p/720p/540p/480p ladder is the exception:
+   * viewers get the ladder, not the publish, so the publish is the ladder's
+   * source and `6000` matches the laddered encoder profile (stream-engine
+   * `docs/INTEGRATION.md` §3.1 "Encoder profiles").
    */
   maxBitrateKbps?: number;
 }
@@ -222,10 +247,11 @@ export interface PlaybackStats {
 /**
  * One selectable rendition of a stream.
  *
- * Mebius does not transcode into a ladder today, so a live stream has exactly one
- * rendition and {@link MebiusPlayer.qualities} is empty. That emptiness is the
- * signal, not an omission: a player UI can hide its quality menu because the list
- * says there is nothing to choose, rather than because someone guessed.
+ * Only tenants the engine transcodes for have a ladder; every other stream has
+ * exactly one rendition and {@link MebiusPlayer.qualities} is empty. That
+ * emptiness is the signal, not an omission: a player UI can hide its quality
+ * menu because the list says there is nothing to choose, rather than because
+ * someone guessed.
  */
 export interface MebiusQuality {
   /** Stable id to pass to {@link MebiusPlayer.setQuality}. */
@@ -236,6 +262,14 @@ export interface MebiusQuality {
   height?: number;
   /** Nominal video bitrate in kbps, when known. */
   bitrateKbps?: number;
+}
+
+/** Payload of the player's `quality-changed` event. */
+export interface QualityChange {
+  /** The {@link MebiusQuality.id} now on screen, or `null` when the route cannot say. */
+  id: string | null;
+  /** True while Mebius picks the rendition (`setQuality("auto")`, the default). */
+  auto: boolean;
 }
 
 /** Options for {@link MebiusClient.createCaptions}. */

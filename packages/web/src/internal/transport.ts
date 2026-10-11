@@ -4,7 +4,16 @@
  * The public API never names a transport; it only asks for a playback *mode*.
  * This factory maps a mode to the right hidden delivery mechanism.
  */
-import type { BroadcastStats, MebiusDelivery, PlaybackMode, PlaybackRoute, PlaybackStats } from "../types.js";
+import type {
+  BroadcastStats,
+  MebiusDelivery,
+  MebiusQuality,
+  MebiusRendition,
+  PlaybackMode,
+  PlaybackRoute,
+  PlaybackStats,
+  QualityChange,
+} from "../types.js";
 import type { SignalingClient } from "./signaling.js";
 import { WhipPublishTransport } from "./publish-transport.js";
 import { WhepViewTransport, DEFAULT_REALTIME_TARGET_MS } from "./ll-view-transport.js";
@@ -53,6 +62,85 @@ export interface ViewTransport {
    * caption at the wrong moment is worse than showing it late.
    */
   playheadEpochMs?(): number | null;
+  /**
+   * Rendition ladder control. Present only on routes that can carry one, and
+   * every one of them answers "nothing to choose" (an empty list, a no-op set)
+   * when the delivery came without renditions — so a route with no ladder
+   * behaves exactly as it did before ladders existed.
+   */
+  qualities?(): readonly MebiusQuality[];
+  currentQuality?(): QualityChange;
+  /**
+   * The player changed the shared {@link QualityPrefs}; act on them now. A no-op
+   * without a ladder or when nothing on screen has to change. Before start()
+   * there is nothing to do: start() reads the prefs itself.
+   */
+  applyQuality?(): Promise<void>;
+  onQualityChanged?(cb: (change: QualityChange) => void): void;
+  /** The list qualities() returns changed on its own, e.g. a reloaded playlist. */
+  onQualitiesChanged?(cb: () => void): void;
+}
+
+/**
+ * The viewer's quality choices, owned by the player and SHARED by reference with
+ * every candidate route. Shared rather than copied so a pick, a cap or an allowed
+ * set survives a failover or a recovery reopen with no bookkeeping: whichever
+ * route opens next reads the same object.
+ */
+export interface QualityPrefs {
+  /** `"auto"` or a rung id. A pick overrides the cap; the cap only limits auto. */
+  selected: string;
+  /** Cap for auto, in pixels of height; `Infinity` for none. */
+  maxHeight: number;
+  /** Rung ids the viewer may get; `null` for all. */
+  allowed: readonly string[] | null;
+}
+
+export function defaultQualityPrefs(): QualityPrefs {
+  return { selected: "auto", maxHeight: Infinity, allowed: null };
+}
+
+/** Public shape of a rung: the path stays internal. */
+export function toQuality(r: MebiusRendition): MebiusQuality {
+  return { id: r.id, label: r.id, height: r.height, bitrateKbps: r.bitrateKbps };
+}
+
+/**
+ * The rungs the viewer may get, highest first. Ids not on the ladder are
+ * ignored, and an allowed set that matches nothing means "all" — an app that
+ * names rungs this stream lacks must still get a picture.
+ */
+export function allowedRungs(
+  ladder: readonly MebiusRendition[],
+  allowed: readonly string[] | null,
+): MebiusRendition[] {
+  const desc = [...ladder].sort((a, b) => b.height - a.height);
+  const kept = allowed ? desc.filter((r) => allowed.includes(r.id)) : [];
+  return kept.length > 0 ? kept : desc;
+}
+
+/** The manually picked rung, or `null` under auto — or when the pick is not on offer here. */
+export function pinnedRung(ladder: readonly MebiusRendition[], prefs: QualityPrefs): MebiusRendition | null {
+  if (prefs.selected === "auto") return null;
+  return allowedRungs(ladder, prefs.allowed).find((r) => r.id === prefs.selected) ?? null;
+}
+
+/**
+ * The rung to open: the pick, or under auto the highest allowed rung that fits
+ * the cap — the lowest allowed when none does, since a cap below the whole
+ * ladder still has to play something. `null` means no ladder: open the
+ * delivery's own path.
+ */
+export function pickRung(ladder: readonly MebiusRendition[], prefs: QualityPrefs): MebiusRendition | null {
+  const pinned = pinnedRung(ladder, prefs);
+  if (pinned) return pinned;
+  const rungs = allowedRungs(ladder, prefs.allowed);
+  return rungs.find((r) => r.height <= prefs.maxHeight) ?? rungs[rungs.length - 1] ?? null;
+}
+
+/** True for the statuses a rung the vendor never produced answers with. */
+export function isMissingRung(status: number | undefined): boolean {
+  return status === 403 || status === 404;
 }
 
 export function createPublishTransport(
@@ -83,16 +171,18 @@ function canPlayBuffered(): boolean {
 }
 
 function transportFor(
-  kind: string,
-  path: string,
+  { kind, path, renditions = [] }: MebiusDelivery,
   signaling: SignalingClient,
-  targetLatencyMs?: number,
+  targetLatencyMs: number | undefined,
+  prefs: QualityPrefs,
 ): ViewTransport | null {
   const targetS = targetLatencyMs === undefined ? undefined : targetLatencyMs / 1000;
   if (kind === KIND_FAST)
-    return canPlayBuffered() ? onRoute(new FlvViewTransport(signaling, path, targetS), kind) : null;
+    return canPlayBuffered()
+      ? onRoute(new FlvViewTransport(signaling, path, targetS, renditions, prefs), kind)
+      : null;
   if (kind === KIND_WIDE || kind === KIND_LOCAL)
-    return onRoute(new HlsViewTransport(signaling, path, targetS), kind);
+    return onRoute(new HlsViewTransport(signaling, path, targetS, renditions, prefs), kind);
   // An unknown kind is a newer gateway talking to an older SDK. Skip it rather
   // than guess: the list is ordered, so the next entry is the intended fallback.
   return null;
@@ -119,11 +209,12 @@ export function createViewCandidates(
   signaling: SignalingClient,
   deliveries: readonly MebiusDelivery[] = [],
   targetLatencyMs?: number,
+  prefs: QualityPrefs = defaultQualityPrefs(),
 ): ViewTransport[] {
   const fromGateway = (kinds: readonly string[]): ViewTransport[] =>
     deliveries
       .filter((d) => kinds.includes(d.kind))
-      .map((d) => transportFor(d.kind, d.path, signaling, targetLatencyMs))
+      .map((d) => transportFor(d, signaling, targetLatencyMs, prefs))
       .filter((t): t is ViewTransport => t !== null);
 
   // Every mode ends with the origin playlist, reachable with no delivery list at

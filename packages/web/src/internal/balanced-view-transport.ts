@@ -21,10 +21,19 @@
  * Hidden from the public API; the public surface speaks only of the
  * `"balanced"` playback mode.
  */
-import type { PlaybackStats } from "../types.js";
+import type { MebiusQuality, MebiusRendition, PlaybackStats, QualityChange } from "../types.js";
 import { mebiusError } from "../errors.js";
 import type { SignalingClient } from "./signaling.js";
-import type { ViewTransport } from "./transport.js";
+import {
+  allowedRungs,
+  defaultQualityPrefs,
+  isMissingRung,
+  pickRung,
+  pinnedRung,
+  toQuality,
+  type QualityPrefs,
+  type ViewTransport,
+} from "./transport.js";
 import { playWithAutoplayFallback } from "./autoplay.js";
 
 type FlvModule = typeof import("flv.js");
@@ -109,6 +118,32 @@ const AUDIO_RETRY_MS = 2500;
 const UPSTREAM_LATENCY_MS = 800;
 
 /**
+ * Distinct stalls inside the window that make `"auto"` step down one rung.
+ *
+ * flv.js has no ABR, so on a laddered stream "auto" is this: open the highest
+ * rung under the cap, and drop one rung when the viewer is demonstrably
+ * starving. One stall is a hiccup; two within 20s is a connection that cannot
+ * carry the rung.
+ *
+ * ponytail: count-in-window heuristic, and no automatic step-up — stepping back
+ * up safely needs a throughput probe this route does not have. A demoted viewer
+ * stays down until they pick a quality, change the cap, or the route reopens.
+ */
+const STEP_DOWN_STALLS = 2;
+const STEP_DOWN_WINDOW_MS = 20_000;
+/**
+ * A `waiting` this soon after syncLiveEdge jumped the playhead is the jump
+ * refilling, not the network starving, and must not count towards a step-down.
+ */
+const SEEK_GRACE_MS = 1500;
+/**
+ * Wait before retrying a rung that answered 403/404 on its first open. An
+ * on-demand transcoder can 404 briefly while a rung warms up, and stepping
+ * down on that would demote every early viewer for nothing.
+ */
+const WARMUP_RETRY_MS = 1000;
+
+/**
  * Resolves true when media has landed but playback still cannot start.
  *
  * Both halves matter. `currentTime === 0` alone is also what a slow first
@@ -153,27 +188,30 @@ function stalledWithData(video: HTMLVideoElement, ms: number): Promise<boolean> 
  * more than 2s past target, jump (speed would take too long); somewhat behind, play
  * slightly fast; near target, leave alone; too close to the edge, play slightly
  * slow until the cushion is rebuilt.
+ *
+ * Returns true when it jumped, so the caller can tell its own seek from a stall.
  */
-export function syncLiveEdge(video: HTMLVideoElement, targetS = DEFAULT_BALANCED_TARGET_S): void {
+export function syncLiveEdge(video: HTMLVideoElement, targetS = DEFAULT_BALANCED_TARGET_S): boolean {
   const ranges = video.buffered;
-  if (ranges.length === 0) return;
+  if (ranges.length === 0) return false;
   const edge = ranges.end(ranges.length - 1);
   const drift = edge - video.currentTime;
 
   if (drift > targetS + SEEK_ABOVE_TARGET_S) {
     video.currentTime = edge - targetS;
     video.playbackRate = 1;
-    return;
+    return true;
   }
   if (drift > targetS * CATCH_UP_ABOVE) {
     video.playbackRate = CATCH_UP_RATE;
-    return;
+    return false;
   }
   if (drift < targetS * BUILD_UP_BELOW) {
     video.playbackRate = BUILD_UP_RATE;
-    return;
+    return false;
   }
   video.playbackRate = 1;
+  return false;
 }
 
 export class FlvViewTransport implements ViewTransport {
@@ -185,12 +223,46 @@ export class FlvViewTransport implements ViewTransport {
   private bufferingCb: (() => void) | null = null;
   /** Aborts this attempt's element listeners; see start(). */
   private listeners: AbortController | null = null;
+  private qualityCb: ((change: QualityChange) => void) | null = null;
+  /** Kept from start() so a rung switch can reopen without re-importing. */
+  private flvjs: FlvModule["default"] | null = null;
+  /** False once start() fell back to the audio-less retry; a rung switch keeps it. */
+  private withAudio = true;
+  /** Last change handed to qualityCb, so an unchanged state is not re-announced. */
+  private announced = "";
+  /** When syncLiveEdge last jumped the playhead; see SEEK_GRACE_MS. */
+  private lastSeekAt = 0;
+  /**
+   * True once the open rung has played. After that a 403/404 is an ordinary
+   * lost connection for the player's recovery, not a rung that does not exist.
+   */
+  private rungPlayed = false;
+  /** The open rung already had its one warm-up retry. */
+  private rungRetried = false;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The rung open right now; `null` on the delivery's own path (no ladder). */
+  private rung: MebiusRendition | null = null;
+  /** Start times of recent distinct stalls, for the auto step-down. */
+  private stallTimes: number[] = [];
+  /**
+   * True from open until the picture first moves, and through each stall. The
+   * join and flv.js's repeated `waiting` through one stall must count once or
+   * not at all, or a slow start alone would demote the viewer.
+   */
+  private inStall = true;
+  /** The ladder, highest first. */
+  private readonly ladder: readonly MebiusRendition[];
 
   constructor(
     private readonly signaling: SignalingClient,
     private readonly deliveryPath: string,
     private readonly targetS: number = DEFAULT_BALANCED_TARGET_S,
-  ) {}
+    renditions: readonly MebiusRendition[] = [],
+    /** Shared with the player and every other route; see QualityPrefs. */
+    private readonly prefs: QualityPrefs = defaultQualityPrefs(),
+  ) {
+    this.ladder = [...renditions].sort((a, b) => b.height - a.height);
+  }
 
   onEnded(cb: () => void): void {
     this.endedCb = cb;
@@ -200,9 +272,33 @@ export class FlvViewTransport implements ViewTransport {
     this.bufferingCb = cb;
   }
 
+  onQualityChanged(cb: (change: QualityChange) => void): void {
+    this.qualityCb = cb;
+  }
+
+  qualities(): readonly MebiusQuality[] {
+    return this.ladder.length ? allowedRungs(this.ladder, this.prefs.allowed).map(toQuality) : [];
+  }
+
+  currentQuality(): QualityChange {
+    return { id: this.rung?.id ?? null, auto: pinnedRung(this.ladder, this.prefs) === null };
+  }
+
+  /** A pick reopens flv.js on that rung's path; flv.js cannot switch in place. */
+  async applyQuality(): Promise<void> {
+    if (this.ladder.length === 0) return;
+    await this.reopen(pickRung(this.ladder, this.prefs));
+  }
+
   async start(_streamId: string, video: HTMLVideoElement): Promise<void> {
     this.video = video;
-    const url = this.signaling.deliveryUrl(this.deliveryPath);
+    this.stallTimes = [];
+    this.inStall = true;
+    this.withAudio = true;
+    this.announced = "";
+    this.lastSeekAt = 0;
+    this.rungPlayed = false;
+    this.rungRetried = false;
 
     // Bound to this attempt's lifetime. The player hands every candidate route
     // the SAME element, so listeners left behind by a route that failed keep
@@ -212,8 +308,29 @@ export class FlvViewTransport implements ViewTransport {
     this.listeners = new AbortController();
     const { signal } = this.listeners;
     video.addEventListener("ended", () => this.endedCb?.(), { signal });
-    video.addEventListener("waiting", () => this.bufferingCb?.(), { signal });
-    video.addEventListener("timeupdate", () => syncLiveEdge(video, this.targetS), { signal });
+    video.addEventListener(
+      "waiting",
+      () => {
+        this.noteStall();
+        this.bufferingCb?.();
+      },
+      { signal },
+    );
+    video.addEventListener(
+      "playing",
+      () => {
+        this.inStall = false;
+        this.rungPlayed = true;
+      },
+      { signal },
+    );
+    video.addEventListener(
+      "timeupdate",
+      () => {
+        if (syncLiveEdge(video, this.targetS)) this.lastSeekAt = Date.now();
+      },
+      { signal },
+    );
 
     let mod: FlvModule;
     try {
@@ -230,8 +347,12 @@ export class FlvViewTransport implements ViewTransport {
     if (!flvjs.isSupported()) {
       throw mebiusError("CONNECTION_FAILED", "Balanced playback is not supported in this browser.");
     }
+    this.flvjs = flvjs;
+    // Chosen only now, after the library loaded: a pick or cap made while it was
+    // loading must be the one that opens.
+    this.rung = pickRung(this.ladder, this.prefs);
 
-    this.attachPlayer(flvjs, video, url, true);
+    this.attachPlayer(flvjs, video, this.rungUrl(), true);
     // NOT awaited yet: video.play() only settles once playback actually begins,
     // so awaiting it here would hang on exactly the stall the retry below exists
     // to break. The outcome is collected after we know the stream moved.
@@ -252,7 +373,8 @@ export class FlvViewTransport implements ViewTransport {
     // the player's 8s route watchdog for a case that is otherwise unrecoverable.
     if (await stalledWithData(video, AUDIO_RETRY_MS)) {
       this.teardownPlayer();
-      this.attachPlayer(flvjs, video, url, false);
+      this.withAudio = false;
+      this.attachPlayer(flvjs, video, this.rungUrl(), false);
       this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
       return;
     }
@@ -270,7 +392,30 @@ export class FlvViewTransport implements ViewTransport {
       LIVE_FLV_CONFIG,
     );
     this.player = player;
-    player.on(flvjs.Events.ERROR ?? "error", () => this.bufferingCb?.());
+    player.on(flvjs.Events.ERROR ?? "error", (_type, _detail, info) => {
+      // A rung the vendor never produced (the source was smaller than it)
+      // answers 403/404 before it ever plays. That is a reason to leave the
+      // rung, not the route — after one retry, since a rung warming up answers
+      // the same way: a pin falls back to auto, and auto steps down past it.
+      if (this.rung && !this.rungPlayed && isMissingRung((info as { code?: number } | undefined)?.code)) {
+        if (!this.rungRetried) {
+          this.rungRetried = true;
+          this.retryTimer = setTimeout(() => void this.reopen(this.rung, true), WARMUP_RETRY_MS);
+          return;
+        }
+        if (pinnedRung(this.ladder, this.prefs)) {
+          this.prefs.selected = "auto";
+          // Auto may land on the very rung that just failed; step past it then.
+          if (pickRung(this.ladder, this.prefs) !== this.rung) {
+            void this.applyQuality();
+            return;
+          }
+        }
+        if (this.stepDown()) return;
+        this.announce(); // at the floor: still say the pin is gone
+      }
+      this.bufferingCb?.();
+    });
     player.attachMediaElement(video);
     player.load();
   }
@@ -283,13 +428,93 @@ export class FlvViewTransport implements ViewTransport {
     this.player = null;
   }
 
+  /**
+   * Switch to `rung` on the element already playing — only the flv.js player is
+   * replaced, so listeners, live-edge sync and the element itself (muted, volume)
+   * carry over and the switch costs one reconnect, not a route walk. Before
+   * start() there is nothing to reopen; start() picks up the stored choice.
+   */
+  private async reopen(rung: MebiusRendition | null, retry = false): Promise<void> {
+    const { video, flvjs } = this;
+    if (!video || !flvjs) return;
+    if (rung === this.rung && !retry) {
+      this.announce(); // the mode may still have changed (a pick of the open rung)
+      return;
+    }
+    this.clearRetry();
+    if (!retry) this.rungRetried = false;
+    this.rungPlayed = false;
+    this.rung = rung;
+    this.stallTimes = [];
+    this.inStall = true;
+    const { muted, volume } = video;
+    this.teardownPlayer();
+    this.attachPlayer(flvjs, video, this.rungUrl(), this.withAudio);
+    video.muted = muted;
+    video.volume = volume;
+    this.announce();
+    try {
+      this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
+    } catch {
+      // A refused play() leaves the element frozen, which the player's own
+      // stall watchdog already turns into a recovery; nothing to add here.
+    }
+  }
+
+  private rungUrl(): string {
+    return this.signaling.deliveryUrl(this.rung?.path ?? this.deliveryPath);
+  }
+
+  private announce(): void {
+    const change = this.currentQuality();
+    const key = `${change.id}|${change.auto}`;
+    if (key === this.announced) return;
+    this.announced = key;
+    this.qualityCb?.(change);
+  }
+
+  /** Counts a distinct stall and, under "auto", steps down once there are enough. */
+  private noteStall(): void {
+    if (this.inStall) return;
+    this.inStall = true;
+    if (!this.rung || pinnedRung(this.ladder, this.prefs)) return;
+    // Our own live-edge jump refilling is not the network starving.
+    if (this.video?.seeking || Date.now() - this.lastSeekAt < SEEK_GRACE_MS) return;
+    const now = Date.now();
+    this.stallTimes = this.stallTimes.filter((t) => now - t < STEP_DOWN_WINDOW_MS);
+    this.stallTimes.push(now);
+    if (this.stallTimes.length < STEP_DOWN_STALLS) return;
+    this.stepDown();
+  }
+
+  /**
+   * Reopen one allowed rung below the open one; false at the floor (the lowest
+   * allowed rung), where there is nowhere left to go.
+   */
+  private stepDown(): boolean {
+    if (!this.rung) return false;
+    const rungs = allowedRungs(this.ladder, this.prefs.allowed);
+    const i = rungs.indexOf(this.rung);
+    const lower = i >= 0 ? rungs[i + 1] : undefined;
+    if (!lower) return false;
+    void this.reopen(lower);
+    return true;
+  }
+
   /** True when playback only started because the element had to be muted. */
   mutedByPolicy = false;
 
+  private clearRetry(): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+  }
+
   async stop(): Promise<void> {
+    this.clearRetry();
     this.listeners?.abort();
     this.listeners = null;
     this.teardownPlayer();
+    this.flvjs = null;
     if (this.video) {
       // Hand the element back at normal speed. syncLiveEdge may have left it
       // running slightly fast or slow, and the next route to use this element
