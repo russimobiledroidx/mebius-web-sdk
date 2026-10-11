@@ -85,7 +85,7 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
     if (!this.stream) return;
     this.facingMode = this.facingMode === "user" ? "environment" : "user";
     const next = await navigator.mediaDevices.getUserMedia({
-      video: { ...(this.ladderSource ? DEFAULT_VIDEO_CAPTURE : {}), facingMode: this.facingMode },
+      video: { ...this.switchBase(), facingMode: this.facingMode },
       audio: false,
     });
     const newTrack = next.getVideoTracks()[0] ?? null;
@@ -124,6 +124,16 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
   /** Opted into publishing a ladder source; see DEFAULT_VIDEO_CAPTURE. */
   private get ladderSource(): boolean {
     return (this.options.maxBitrateKbps ?? 0) > DEFAULT_MAX_BITRATE_KBPS;
+  }
+
+  /**
+   * What a camera switch asks for besides the facing. Without the opt-in this is
+   * nothing, exactly as before; with it, the app's own constraints win over the
+   * 1080p default rather than being replaced by it.
+   */
+  private switchBase(): MediaTrackConstraints {
+    if (!this.ladderSource) return {};
+    return typeof this.options.video === "object" ? this.options.video : DEFAULT_VIDEO_CAPTURE;
   }
 
   private async capture(): Promise<MediaStream> {

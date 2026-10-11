@@ -2,7 +2,12 @@ import { TypedEmitter, type PlayerEventMap } from "./events.js";
 import { mebiusError } from "./errors.js";
 import { resolveVideoElement } from "./internal/view-target.js";
 import type { SignalingClient } from "./internal/signaling.js";
-import { createViewCandidates, type ViewTransport } from "./internal/transport.js";
+import {
+  createViewCandidates,
+  defaultQualityPrefs,
+  type QualityPrefs,
+  type ViewTransport,
+} from "./internal/transport.js";
 import { QoeReporter, type TelemetryTarget } from "./internal/telemetry.js";
 import { resetVideoElement } from "./internal/autoplay.js";
 import { FreezeClock } from "./internal/freeze-clock.js";
@@ -118,6 +123,11 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
    * can be several seconds inside a backoff when that happens.
    */
   private session = 0;
+  /**
+   * The viewer's quality choices, shared by reference with every candidate
+   * route — which is what carries them across a failover or a recovery reopen.
+   */
+  private readonly prefs: QualityPrefs = defaultQualityPrefs();
 
   /** @internal */
   constructor(
@@ -133,6 +143,7 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
       signaling,
       deliveries,
       options.targetLatencyMs,
+      this.prefs,
     );
   }
 
@@ -334,12 +345,20 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
 
   /**
    * Choose a rendition, or `"auto"` to let Mebius decide (the default). The
-   * switch is announced with `quality-changed`.
+   * switch is announced with `quality-changed`. A pick overrides
+   * {@link setMaxQuality}; the cap only limits auto. If the picked rendition
+   * turns out not to exist for this stream (the source was smaller than it),
+   * playback falls back to auto rather than failing, with `quality-changed`
+   * reporting `auto: true`.
    *
-   * Rejects an id that is not in {@link qualities} instead of silently doing
-   * nothing — a UI that asks for a rendition and gets no error would otherwise
-   * show the wrong state forever. Rejecting does not touch playback: the stream
-   * keeps running on whatever it is running on.
+   * Rejects an id that is not in {@link qualities} (which also excludes ids
+   * outside {@link setAllowedQualities}) instead of silently doing nothing — a
+   * UI that asks for a rendition and gets no error would otherwise show the
+   * wrong state forever. Rejecting does not touch playback: the stream keeps
+   * running on whatever it is running on.
+   *
+   * The pick is kept by the player, so a route reopened by recovery or failover
+   * opens on it too.
    */
   async setQuality(id: "auto" | string): Promise<void> {
     if (id !== "auto" && !this.renditions.some((q) => q.id === id)) {
@@ -348,21 +367,60 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
         `Unknown quality "${id}". Pass "auto", or an id from player.qualities.`,
       );
     }
-    // With no ladder there is nothing to switch to, and the route has no such
-    // method or treats the call as a no-op.
-    await this.transport?.setQuality?.(id);
+    if (id === this.prefs.selected) return;
+    this.prefs.selected = id;
+    await this.transport?.applyQuality?.();
   }
 
   /**
    * Cap `"auto"` at renditions no taller than `height` pixels, e.g. `720` on a
    * small embed or a metered connection. A manual {@link setQuality} pick is
-   * not capped. Pass `Infinity` to lift the cap.
+   * not capped. `0`, `null`, `undefined` or `Infinity` lift the cap; a negative
+   * or non-numeric height is rejected.
    *
-   * Callable before {@link play}: the cap is handed to every route, so it holds
-   * from the first frame and across a failover. No effect without a ladder.
+   * Callable before {@link play}, and kept across a failover. No effect without
+   * a ladder.
    */
-  setMaxQuality(height: number): void {
-    for (const candidate of this.candidates) candidate.setMaxQuality?.(height);
+  setMaxQuality(height: number | null | undefined): void {
+    if (height === null || height === undefined || height === 0 || height === Infinity) {
+      this.prefs.maxHeight = Infinity;
+    } else if (typeof height !== "number" || !Number.isFinite(height) || height < 0) {
+      throw mebiusError("UNKNOWN", `Invalid max quality ${String(height)}. Pass a height in pixels, or 0 for none.`);
+    } else {
+      this.prefs.maxHeight = height;
+    }
+    void this.transport?.applyQuality?.();
+  }
+
+  /**
+   * Restrict which renditions this viewer may get, e.g. `["540p", "480p"]` for a
+   * tier that should never receive full HD. `null` or `[]` allows all. Ids this
+   * stream does not have are ignored, and a list that matches none of them
+   * allows all — a stream must never be left with nothing to play.
+   *
+   * {@link qualities} then lists only the allowed renditions (announced with
+   * `qualities-changed` when that changes the list), auto never leaves them,
+   * and {@link setQuality} rejects any other id. A pick that is no longer
+   * allowed goes back to auto. Callable before {@link play}, and kept across a
+   * failover. No effect without a ladder.
+   */
+  async setAllowedQualities(ids: readonly string[] | null): Promise<void> {
+    if (ids !== null && (!Array.isArray(ids) || ids.some((id) => typeof id !== "string"))) {
+      throw mebiusError("UNKNOWN", "setAllowedQualities takes an array of quality ids, or null.");
+    }
+    this.prefs.allowed = ids && ids.length > 0 ? [...ids] : null;
+    if (this.transport?.qualities) {
+      const next = this.transport.qualities();
+      if (next.map((q) => q.id).join() !== this.renditions.map((q) => q.id).join()) {
+        this.renditions = Object.freeze([...next]);
+        this.emit("qualities-changed", this.renditions);
+      }
+    }
+    const picked = this.prefs.selected;
+    if (picked !== "auto" && this.renditions.length > 0 && !this.renditions.some((q) => q.id === picked)) {
+      this.prefs.selected = "auto";
+    }
+    await this.transport?.applyQuality?.();
   }
 
   /**

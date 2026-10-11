@@ -24,7 +24,16 @@
 import type { MebiusQuality, MebiusRendition, PlaybackStats, QualityChange } from "../types.js";
 import { mebiusError } from "../errors.js";
 import type { SignalingClient } from "./signaling.js";
-import { pickRung, toQuality, type ViewTransport } from "./transport.js";
+import {
+  allowedRungs,
+  defaultQualityPrefs,
+  isMissingRung,
+  pickRung,
+  pinnedRung,
+  toQuality,
+  type QualityPrefs,
+  type ViewTransport,
+} from "./transport.js";
 import { playWithAutoplayFallback } from "./autoplay.js";
 
 type FlvModule = typeof import("flv.js");
@@ -122,6 +131,11 @@ const UPSTREAM_LATENCY_MS = 800;
  */
 const STEP_DOWN_STALLS = 2;
 const STEP_DOWN_WINDOW_MS = 20_000;
+/**
+ * A `waiting` this soon after syncLiveEdge jumped the playhead is the jump
+ * refilling, not the network starving, and must not count towards a step-down.
+ */
+const SEEK_GRACE_MS = 1500;
 
 /**
  * Resolves true when media has landed but playback still cannot start.
@@ -168,27 +182,30 @@ function stalledWithData(video: HTMLVideoElement, ms: number): Promise<boolean> 
  * more than 2s past target, jump (speed would take too long); somewhat behind, play
  * slightly fast; near target, leave alone; too close to the edge, play slightly
  * slow until the cushion is rebuilt.
+ *
+ * Returns true when it jumped, so the caller can tell its own seek from a stall.
  */
-export function syncLiveEdge(video: HTMLVideoElement, targetS = DEFAULT_BALANCED_TARGET_S): void {
+export function syncLiveEdge(video: HTMLVideoElement, targetS = DEFAULT_BALANCED_TARGET_S): boolean {
   const ranges = video.buffered;
-  if (ranges.length === 0) return;
+  if (ranges.length === 0) return false;
   const edge = ranges.end(ranges.length - 1);
   const drift = edge - video.currentTime;
 
   if (drift > targetS + SEEK_ABOVE_TARGET_S) {
     video.currentTime = edge - targetS;
     video.playbackRate = 1;
-    return;
+    return true;
   }
   if (drift > targetS * CATCH_UP_ABOVE) {
     video.playbackRate = CATCH_UP_RATE;
-    return;
+    return false;
   }
   if (drift < targetS * BUILD_UP_BELOW) {
     video.playbackRate = BUILD_UP_RATE;
-    return;
+    return false;
   }
   video.playbackRate = 1;
+  return false;
 }
 
 export class FlvViewTransport implements ViewTransport {
@@ -205,9 +222,10 @@ export class FlvViewTransport implements ViewTransport {
   private flvjs: FlvModule["default"] | null = null;
   /** False once start() fell back to the audio-less retry; a rung switch keeps it. */
   private withAudio = true;
-  /** `"auto"` or a rung id. Survives stop(), so a recovered route keeps the pick. */
-  private selected = "auto";
-  private maxHeight = Infinity;
+  /** Last change handed to qualityCb, so an unchanged state is not re-announced. */
+  private announced = "";
+  /** When syncLiveEdge last jumped the playhead; see SEEK_GRACE_MS. */
+  private lastSeekAt = 0;
   /** The rung open right now; `null` on the delivery's own path (no ladder). */
   private rung: MebiusRendition | null = null;
   /** Start times of recent distinct stalls, for the auto step-down. */
@@ -226,6 +244,8 @@ export class FlvViewTransport implements ViewTransport {
     private readonly deliveryPath: string,
     private readonly targetS: number = DEFAULT_BALANCED_TARGET_S,
     renditions: readonly MebiusRendition[] = [],
+    /** Shared with the player and every other route; see QualityPrefs. */
+    private readonly prefs: QualityPrefs = defaultQualityPrefs(),
   ) {
     this.ladder = [...renditions].sort((a, b) => b.height - a.height);
   }
@@ -243,31 +263,26 @@ export class FlvViewTransport implements ViewTransport {
   }
 
   qualities(): readonly MebiusQuality[] {
-    return this.ladder.map(toQuality);
+    return this.ladder.length ? allowedRungs(this.ladder, this.prefs.allowed).map(toQuality) : [];
   }
 
   currentQuality(): QualityChange {
-    return { id: this.rung?.id ?? null, auto: this.selected === "auto" };
+    return { id: this.rung?.id ?? null, auto: pinnedRung(this.ladder, this.prefs) === null };
   }
 
   /** A pick reopens flv.js on that rung's path; flv.js cannot switch in place. */
-  async setQuality(id: string): Promise<void> {
-    this.selected = id;
-    await this.reopen(pickRung(this.ladder, id, this.maxHeight));
-  }
-
-  setMaxQuality(height: number): void {
-    this.maxHeight = height;
-    if (this.selected === "auto") void this.reopen(pickRung(this.ladder, "auto", height));
+  async applyQuality(): Promise<void> {
+    if (this.ladder.length === 0) return;
+    await this.reopen(pickRung(this.ladder, this.prefs));
   }
 
   async start(_streamId: string, video: HTMLVideoElement): Promise<void> {
     this.video = video;
-    this.rung = pickRung(this.ladder, this.selected, this.maxHeight);
     this.stallTimes = [];
     this.inStall = true;
     this.withAudio = true;
-    const url = this.signaling.deliveryUrl(this.rung?.path ?? this.deliveryPath);
+    this.announced = "";
+    this.lastSeekAt = 0;
 
     // Bound to this attempt's lifetime. The player hands every candidate route
     // the SAME element, so listeners left behind by a route that failed keep
@@ -286,7 +301,13 @@ export class FlvViewTransport implements ViewTransport {
       { signal },
     );
     video.addEventListener("playing", () => (this.inStall = false), { signal });
-    video.addEventListener("timeupdate", () => syncLiveEdge(video, this.targetS), { signal });
+    video.addEventListener(
+      "timeupdate",
+      () => {
+        if (syncLiveEdge(video, this.targetS)) this.lastSeekAt = Date.now();
+      },
+      { signal },
+    );
 
     let mod: FlvModule;
     try {
@@ -304,8 +325,11 @@ export class FlvViewTransport implements ViewTransport {
       throw mebiusError("CONNECTION_FAILED", "Balanced playback is not supported in this browser.");
     }
     this.flvjs = flvjs;
+    // Chosen only now, after the library loaded: a pick or cap made while it was
+    // loading must be the one that opens.
+    this.rung = pickRung(this.ladder, this.prefs);
 
-    this.attachPlayer(flvjs, video, url, true);
+    this.attachPlayer(flvjs, video, this.rungUrl(), true);
     // NOT awaited yet: video.play() only settles once playback actually begins,
     // so awaiting it here would hang on exactly the stall the retry below exists
     // to break. The outcome is collected after we know the stream moved.
@@ -327,7 +351,7 @@ export class FlvViewTransport implements ViewTransport {
     if (await stalledWithData(video, AUDIO_RETRY_MS)) {
       this.teardownPlayer();
       this.withAudio = false;
-      this.attachPlayer(flvjs, video, url, false);
+      this.attachPlayer(flvjs, video, this.rungUrl(), false);
       this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
       return;
     }
@@ -345,7 +369,16 @@ export class FlvViewTransport implements ViewTransport {
       LIVE_FLV_CONFIG,
     );
     this.player = player;
-    player.on(flvjs.Events.ERROR ?? "error", () => this.bufferingCb?.());
+    player.on(flvjs.Events.ERROR ?? "error", (_type, _detail, info) => {
+      // A pinned rung the vendor never produced (the source was smaller than
+      // it) answers 403/404. That is a reason to drop the pin, not the route.
+      if (pinnedRung(this.ladder, this.prefs) && isMissingRung((info as { code?: number } | undefined)?.code)) {
+        this.prefs.selected = "auto";
+        void this.applyQuality();
+        return;
+      }
+      this.bufferingCb?.();
+    });
     player.attachMediaElement(video);
     player.load();
   }
@@ -366,8 +399,9 @@ export class FlvViewTransport implements ViewTransport {
    */
   private async reopen(rung: MebiusRendition | null): Promise<void> {
     const { video, flvjs } = this;
-    if (!video || !flvjs || rung === this.rung) {
-      this.qualityCb?.(this.currentQuality());
+    if (!video || !flvjs) return;
+    if (rung === this.rung) {
+      this.announce(); // the mode may still have changed (a pick of the open rung)
       return;
     }
     this.rung = rung;
@@ -375,25 +409,45 @@ export class FlvViewTransport implements ViewTransport {
     this.inStall = true;
     const { muted, volume } = video;
     this.teardownPlayer();
-    this.attachPlayer(flvjs, video, this.signaling.deliveryUrl(rung?.path ?? this.deliveryPath), this.withAudio);
+    this.attachPlayer(flvjs, video, this.rungUrl(), this.withAudio);
     video.muted = muted;
     video.volume = volume;
-    this.qualityCb?.(this.currentQuality());
-    // A refused play() leaves the element frozen, which the player's own stall
-    // watchdog already turns into a recovery; nothing to add here.
-    await playWithAutoplayFallback(video).catch(() => undefined);
+    this.announce();
+    try {
+      this.mutedByPolicy = (await playWithAutoplayFallback(video)).mutedByPolicy;
+    } catch {
+      // A refused play() leaves the element frozen, which the player's own
+      // stall watchdog already turns into a recovery; nothing to add here.
+    }
+  }
+
+  private rungUrl(): string {
+    return this.signaling.deliveryUrl(this.rung?.path ?? this.deliveryPath);
+  }
+
+  private announce(): void {
+    const change = this.currentQuality();
+    const key = `${change.id}|${change.auto}`;
+    if (key === this.announced) return;
+    this.announced = key;
+    this.qualityCb?.(change);
   }
 
   /** Counts a distinct stall and, under "auto", steps down once there are enough. */
   private noteStall(): void {
     if (this.inStall) return;
     this.inStall = true;
-    if (this.selected !== "auto" || !this.rung) return;
+    if (!this.rung || pinnedRung(this.ladder, this.prefs)) return;
+    // Our own live-edge jump refilling is not the network starving.
+    if (this.video?.seeking || Date.now() - this.lastSeekAt < SEEK_GRACE_MS) return;
     const now = Date.now();
     this.stallTimes = this.stallTimes.filter((t) => now - t < STEP_DOWN_WINDOW_MS);
     this.stallTimes.push(now);
     if (this.stallTimes.length < STEP_DOWN_STALLS) return;
-    const lower = this.ladder[this.ladder.indexOf(this.rung) + 1];
+    // Within the allowed rungs only: the lowest allowed is the floor.
+    const rungs = allowedRungs(this.ladder, this.prefs.allowed);
+    const i = rungs.indexOf(this.rung);
+    const lower = i >= 0 ? rungs[i + 1] : undefined;
     if (lower) void this.reopen(lower);
   }
 
@@ -404,6 +458,7 @@ export class FlvViewTransport implements ViewTransport {
     this.listeners?.abort();
     this.listeners = null;
     this.teardownPlayer();
+    this.flvjs = null;
     if (this.video) {
       // Hand the element back at normal speed. syncLiveEdge may have left it
       // running slightly fast or slow, and the next route to use this element

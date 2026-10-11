@@ -55,10 +55,19 @@ describe("broadcaster capture constraints", () => {
     ]);
   });
 
-  it("leaves the app's own constraints alone even when opted in", async () => {
+  it("leaves the app's own constraints alone even when opted in, on switch too", async () => {
     const own = { width: 640 };
     const { getUserMedia, captureAndSwitch } = setup({ maxBitrateKbps: 5000, video: own });
     await captureAndSwitch();
-    expect(getUserMedia.mock.calls[0]).toEqual([{ video: own, audio: true }]);
+    expect(getUserMedia.mock.calls).toEqual([
+      [{ video: own, audio: true }],
+      [{ video: { width: 640, facingMode: "environment" }, audio: false }],
+    ]);
+  });
+
+  it("without the opt-in, a switch ignores the app's constraints exactly as before", async () => {
+    const { getUserMedia, captureAndSwitch } = setup({ video: { width: 640 } });
+    await captureAndSwitch();
+    expect(getUserMedia.mock.calls[1]).toEqual([{ video: { facingMode: "environment" }, audio: false }]);
   });
 });

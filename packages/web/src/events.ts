@@ -42,12 +42,14 @@ export type PlayerEventMap = {
   stats: PlaybackStats;
   /**
    * The selectable renditions changed, because the player moved to a different
-   * delivery route. Fires once per accepted route, carrying the list as it now
-   * stands — empty on a stream with no rendition ladder.
+   * delivery route or setAllowedQualities changed the list. Fires once per
+   * accepted route, carrying the list as it now stands — empty on a stream with
+   * no rendition ladder.
    */
   "qualities-changed": readonly MebiusQuality[];
   /**
-   * The rendition on screen changed: a manual pick, an automatic switch, or the
+   * The rendition on screen changed: a manual pick, an automatic switch, a pick
+   * that fell back to auto because the stream lacks that rendition, or the
    * route being accepted. `id` is the rendition now playing, or `null` when the
    * route cannot say (no ladder, or the source quality). `auto` is whether
    * Mebius is choosing.

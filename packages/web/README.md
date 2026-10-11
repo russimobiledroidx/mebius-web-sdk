@@ -183,18 +183,39 @@ await player.play("my-stream", "#viewer");
 player.qualities;              // [{ id: "1080p", label: "1080p", height: 1080, bitrateKbps: 5000 }, ...]
 await player.setQuality("720p");
 await player.setQuality("auto"); // default
-player.setMaxQuality(720);     // "auto" tidak pernah naik di atas 720p; boleh dipanggil sebelum play()
+player.setMaxQuality(720);     // "auto" tidak pernah naik di atas 720p; 0/null = tanpa cap
 ```
 
+Membatasi rendition yang boleh diterima penonton (mis. paket tanpa full HD) —
+contoh SportStream di web:
+
+```ts
+await player.setAllowedQualities(["540p", "480p"]); // sebelum atau sesudah play()
+player.qualities;  // hanya rendition yang diizinkan DAN ada di stream ini → [{ id: "480p", ... }]
+await player.setAllowedQualities(null);             // null atau [] = semua
+```
+
+- `setAllowedQualities`: id yang tidak ada di ladder diabaikan; kalau tak satu pun
+  cocok, semua diizinkan (stream tidak pernah kehilangan gambar). `qualities-changed`
+  terbit kalau daftarnya berubah, `"auto"` tidak pernah keluar dari set ini, dan
+  `setQuality` dengan id di luar set ditolak. Pilihan manual yang tidak lagi
+  diizinkan kembali ke `"auto"`.
+- Pilihan manual mengalahkan `setMaxQuality`; cap hanya membatasi `"auto"`.
+- Kalau rendition yang dipilih ternyata tidak ada untuk stream ini (sumbernya lebih
+  kecil), playback kembali ke `"auto"` — bukan gagal — dan `quality-changed`
+  terbit dengan `auto: true`.
+- Pilihan, cap, dan set yang diizinkan disimpan player, jadi tetap berlaku saat
+  rute dibuka ulang (recovery/failover).
 - `qualities` kosong kalau delivery tidak membawa `renditions` — perilaku playback
-  persis seperti sebelumnya.
+  persis seperti sebelumnya, dan semua method di atas tidak berpengaruh.
 - `quality-changed`: `id` = rendition yang sedang tayang, `null` kalau rute tidak
   bisa menyebutnya (mis. ABR native Safari). Bisa terbit lebih dari sekali per pilihan.
 - Rute `wide`: kualitas menyesuaikan jaringan secara kontinu; pilihan manual
   berpindah di tempat tanpa membuka ulang stream.
-- Rute `fast`: `"auto"` mulai dari rendition tertinggi ≤ cap dan turun satu
-  tingkat setelah 2 stall dalam 20 detik (tidak naik sendiri); pilihan manual
-  membuka ulang stream di rendition itu (~1 detik, mute/volume tetap).
+- Rute `fast`: `"auto"` mulai dari rendition tertinggi yang diizinkan ≤ cap dan
+  turun satu tingkat (tidak di bawah yang terendah yang diizinkan) setelah 2 stall
+  dalam 20 detik (tidak naik sendiri); pilihan manual membuka ulang stream di
+  rendition itu (~1 detik, mute/volume tetap).
 - Safari iOS: browser yang memilih kualitas di mode `"auto"`; pilihan manual atau
   cap di bawah rendition tertinggi mengunci satu rendition.
 
@@ -323,7 +344,8 @@ tidak membawa bundle mode lain.
 | `MebiusPlayer` | `setVolume(0..1)` | `void` | |
 | `MebiusPlayer` | `qualities` | `MebiusQuality[]` | Rendition yang benar-benar bisa dipilih. `[]` = satu rendition, sembunyikan menu kualitas. |
 | `MebiusPlayer` | `setQuality("auto" \| id)` | `Promise<void>` | Tolak id di luar `qualities`; playback tidak terganggu. |
-| `MebiusPlayer` | `setMaxQuality(height)` | `void` | Cap untuk `"auto"`, dalam piksel tinggi. |
+| `MebiusPlayer` | `setMaxQuality(height)` | `void` | Cap untuk `"auto"`, dalam piksel tinggi. `0`/`null` = tanpa cap. |
+| `MebiusPlayer` | `setAllowedQualities(ids \| null)` | `Promise<void>` | Batasi rendition yang boleh diterima. `null`/`[]` = semua. |
 
 ### Events
 
