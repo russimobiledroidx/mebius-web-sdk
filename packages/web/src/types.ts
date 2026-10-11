@@ -98,9 +98,10 @@ export type MediaConstraint = boolean | MediaTrackConstraints;
 /** Options for {@link MebiusClient.createBroadcaster}. */
 export interface BroadcasterOptions {
   /**
-   * Capture video. Defaults to `true`, which asks the camera for 1920x1080 at
-   * 30fps as an `ideal` (a weaker camera opens at its best). Pass your own
-   * constraints to choose differently.
+   * Capture video. Defaults to `true`. With {@link maxBitrateKbps} above the
+   * default (a laddered tenant), the default instead asks the camera for
+   * 1920x1080 at 30fps as an `ideal` (a weaker camera opens at its best). Pass
+   * your own constraints to choose differently.
    */
   video?: MediaConstraint;
   /** Capture audio. Defaults to `true`. */

@@ -198,9 +198,9 @@ player.setMaxQuality(720);     // "auto" tidak pernah naik di atas 720p; boleh d
 - Safari iOS: browser yang memilih kualitas di mode `"auto"`; pilihan manual atau
   cap di bawah rendition tertinggi mengunci satu rendition.
 
-Broadcaster web kini meminta kamera 1920x1080@30 (`ideal`, kamera lemah tetap
-jalan). Plafon bitrate default tetap 2500 kbps; untuk tenant ber-ladder pakai
-`createBroadcaster({ maxBitrateKbps: 5000 })`.
+Untuk tenant ber-ladder pakai `createBroadcaster({ maxBitrateKbps: 5000 })`: di atas
+default 2500 kbps, broadcaster juga meminta kamera 1920x1080@30 (`ideal`, kamera
+lemah tetap jalan). Tanpa opsi itu capture dan bitrate persis seperti sebelumnya.
 
 Profil encoder resmi dan kontrak `renditions`: stream-engine `docs/INTEGRATION.md`
 §3.1 "Official encoder profile" dan §5.9 "Quality renditions".

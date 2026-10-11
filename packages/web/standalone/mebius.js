@@ -43749,9 +43749,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       var _a;
       if (!this.stream) return;
       this.facingMode = this.facingMode === "user" ? "environment" : "user";
-      const video = this.options.video;
       const next = await navigator.mediaDevices.getUserMedia({
-        video: __spreadProps(__spreadValues({}, typeof video === "object" ? video : DEFAULT_VIDEO_CAPTURE), { facingMode: this.facingMode }),
+        video: __spreadProps(__spreadValues({}, this.ladderSource ? DEFAULT_VIDEO_CAPTURE : {}), { facingMode: this.facingMode }),
         audio: false
       });
       const newTrack = (_a = next.getVideoTracks()[0]) != null ? _a : null;
@@ -43785,8 +43784,13 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       video.muted = true;
       void video.play().catch(() => void 0);
     }
+    /** Opted into publishing a ladder source; see DEFAULT_VIDEO_CAPTURE. */
+    get ladderSource() {
+      var _a;
+      return ((_a = this.options.maxBitrateKbps) != null ? _a : 0) > DEFAULT_MAX_BITRATE_KBPS;
+    }
     async capture() {
-      const video = normalize(this.options.video, DEFAULT_VIDEO_CAPTURE);
+      const video = normalize(this.options.video, this.ladderSource ? DEFAULT_VIDEO_CAPTURE : true);
       const audio = normalize(this.options.audio, true);
       try {
         return await navigator.mediaDevices.getUserMedia({ video, audio });
