@@ -54,6 +54,7 @@ class FakeHls {
   static supported = true;
   static isSupported = () => FakeHls.supported;
   static Events = { ERROR: "e", MANIFEST_PARSED: "mp", LEVEL_SWITCHED: "ls" };
+  static ErrorDetails = { LEVEL_LOAD_ERROR: "levelLoadError", FRAG_LOAD_ERROR: "fragLoadError" };
   static DefaultConfig = { loader: class {} };
   levels: { height: number; bitrate: number }[] = [];
   playing = -1;
@@ -81,6 +82,7 @@ class FakeHls {
   }
   loadSource(url: string) {
     this.sources.push(url);
+    this.levels = []; // a new master: nothing is known until it is parsed
   }
   attachMedia() {}
   destroy() {}
@@ -325,11 +327,19 @@ describe("HLS route (hls.js)", () => {
     const { t, hls, changes, q } = await started(prefs({ selected: "1080p" }));
     t.onBuffering(buffering);
     expect(hls.writes.at(-1)).toEqual(["loadLevel", 3]);
-    hls.handlers.get("e")!(undefined, { fatal: true, response: { code: 404 } });
+    hls.handlers.get("e")!(undefined, { fatal: true, details: "levelLoadError", response: { code: 404 } });
     expect(q.selected).toBe("auto");
     expect(hls.writes.at(-1)).toEqual(["loadLevel", -1]);
     expect(changes.at(-1)!.auto).toBe(true);
     expect(buffering).not.toHaveBeenCalled();
+  });
+
+  it("keeps the pin on a segment 404 or an expired-token 403; only a playlist load drops it", async () => {
+    const { hls, q } = await started(prefs({ selected: "1080p" }));
+    hls.handlers.get("e")!(undefined, { fatal: false, details: "fragLoadError", response: { code: 404 } });
+    hls.handlers.get("e")!(undefined, { fatal: false, details: "fragLoadError", response: { code: 403 } });
+    expect(q.selected).toBe("1080p");
+    expect(hls.writes.at(-1)).toEqual(["loadLevel", 3]);
   });
 
   it("an unmatched pick reports auto, not a pin that is not happening", async () => {
@@ -485,6 +495,38 @@ describe("FLV route (flv.js)", () => {
     expect(flvOpened).toHaveLength(2);
   });
 
+  it("under auto, a rung answering 404 steps down instead of failing the route", async () => {
+    const buffering = vi.fn();
+    const { t, changes } = await started();
+    t.onBuffering(buffering);
+    flvOpened[0]!.onError!("NetworkError", "HttpStatusCodeInvalid", { code: 404 });
+    await tick();
+    expect(opened()).toEqual(["/d/fast/s1/1080p", "/d/fast/s1/720p"]);
+    expect(changes.at(-1)).toEqual({ id: "720p", auto: true });
+    expect(buffering).not.toHaveBeenCalled();
+  });
+
+  it("at the lowest allowed rung a 404 is handed on as a stall", async () => {
+    const buffering = vi.fn();
+    const { t } = await started(prefs({ allowed: ["480p"] }));
+    t.onBuffering(buffering);
+    flvOpened[0]!.onError!("NetworkError", "HttpStatusCodeInvalid", { code: 404 });
+    expect(flvOpened).toHaveLength(1);
+    expect(buffering).toHaveBeenCalledOnce();
+  });
+
+  it("a failing pin whose auto rung is the same dead rung steps down past it", async () => {
+    const buffering = vi.fn();
+    const { t, changes, q } = await started(prefs({ selected: "1080p" }));
+    t.onBuffering(buffering);
+    flvOpened[0]!.onError!("NetworkError", "HttpStatusCodeInvalid", { code: 403 });
+    await tick();
+    expect(q.selected).toBe("auto");
+    expect(opened()).toEqual(["/d/fast/s1/1080p", "/d/fast/s1/720p"]);
+    expect(changes.at(-1)).toEqual({ id: "720p", auto: true });
+    expect(buffering).not.toHaveBeenCalled();
+  });
+
   it("does not step down a manual pick", async () => {
     const { t, v, q } = await started();
     q.selected = "1080p";
@@ -586,6 +628,31 @@ describe("player quality API", () => {
     await p.play("s1", v);
     expect(opened().at(-1)).toBe("/d/fast/s1/720p");
     expect(p.qualities.map((q) => q.id)).toEqual(["720p", "480p"]);
+    await p.stop();
+  });
+
+  it("widening the allowed set on the wide route brings the full list back", async () => {
+    const p = new MebiusPlayer(sig(), {}, [{ kind: "wide", path: "/d/wide/s1", renditions: WIDE_LADDER }]);
+    const lists: string[][] = [];
+    p.on("qualities-changed", (l) => lists.push(l.map((q) => q.id)));
+    await p.play("s1", asVideo(el()));
+    const hls = FakeHls.instances[0]!;
+    hls.parse();
+
+    await p.setAllowedQualities(["540p", "480p"]);
+    hls.parse([480, 540]); // the gateway filtered the master
+    expect(p.qualities.map((q) => q.id)).toEqual(["540p", "480p"]);
+
+    await p.setAllowedQualities(null);
+    expect(p.qualities.map((q) => q.id)).toEqual(["1080p", "720p", "540p", "480p"]);
+    hls.parse();
+    await p.setQuality("1080p");
+    expect(hls.writes.at(-1)).toEqual(["nextLevel", 3]);
+
+    // The list is re-read once a reloaded master is parsed, not only on the call.
+    await p.setAllowedQualities(["720p", "540p", "480p"]);
+    hls.parse([480, 540]); // this master came back without 720p
+    expect(lists.at(-1)).toEqual(["540p", "480p"]);
     await p.stop();
   });
 

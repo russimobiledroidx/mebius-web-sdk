@@ -101,6 +101,7 @@ export class HlsViewTransport implements ViewTransport {
   /** Aborts this attempt's element listeners; see start(). */
   private listeners: AbortController | null = null;
   private qualityCb: ((change: QualityChange) => void) | null = null;
+  private qualitiesCb: (() => void) | null = null;
   /** Last change handed to qualityCb, so an unchanged state is not re-announced. */
   private announced = "";
   /** The playlist address before any `q` filter; see masterUrl(). */
@@ -132,6 +133,10 @@ export class HlsViewTransport implements ViewTransport {
 
   onQualityChanged(cb: (change: QualityChange) => void): void {
     this.qualityCb = cb;
+  }
+
+  onQualitiesChanged(cb: () => void): void {
+    this.qualitiesCb = cb;
   }
 
   /** Allowed rungs the playlist actually carries, once hls.js has read it. */
@@ -296,8 +301,13 @@ export class HlsViewTransport implements ViewTransport {
     this.hls = hls;
     hls.on(Hls.Events.ERROR, (_evt, data) => {
       // A pinned rung the vendor never produced (the source was smaller than
-      // it) answers 403/404: drop the pin, not the route.
-      if (this.level !== -1 && isMissingRung(data.response?.code)) {
+      // it) answers 403/404 on its playlist: drop the pin, not the route. Only
+      // the playlist load: a segment 404 or an expired-token 403 is not that.
+      if (
+        this.level !== -1 &&
+        data.details === Hls.ErrorDetails.LEVEL_LOAD_ERROR &&
+        isMissingRung(data.response?.code)
+      ) {
         this.prefs.selected = "auto";
         void this.applyQuality();
         return;
@@ -313,6 +323,8 @@ export class HlsViewTransport implements ViewTransport {
         this.level = this.pinnedLevel();
         hls.loadLevel = this.level;
         this.announce();
+        // A reloaded master (a changed allowed set) can list different rungs.
+        this.qualitiesCb?.();
       });
       hls.on(Hls.Events.LEVEL_SWITCHED, () => this.announce());
     }

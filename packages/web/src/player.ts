@@ -409,18 +409,25 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
       throw mebiusError("UNKNOWN", "setAllowedQualities takes an array of quality ids, or null.");
     }
     this.prefs.allowed = ids && ids.length > 0 ? [...ids] : null;
-    if (this.transport?.qualities) {
-      const next = this.transport.qualities();
-      if (next.map((q) => q.id).join() !== this.renditions.map((q) => q.id).join()) {
-        this.renditions = Object.freeze([...next]);
-        this.emit("qualities-changed", this.renditions);
-      }
-    }
+    // Applied first: a route may have to reload its playlist before it can say
+    // what it now offers (and says so again once it has; see refreshQualities).
+    await this.transport?.applyQuality?.();
+    this.refreshQualities();
+    // A pick the set now excludes already plays as auto on the route; this
+    // makes the player say so too.
     const picked = this.prefs.selected;
     if (picked !== "auto" && this.renditions.length > 0 && !this.renditions.some((q) => q.id === picked)) {
       this.prefs.selected = "auto";
     }
-    await this.transport?.applyQuality?.();
+  }
+
+  /** Re-read the serving route's list, and announce it only if it changed. */
+  private refreshQualities(): void {
+    if (!this.transport?.qualities) return;
+    const next = this.transport.qualities();
+    if (next.map((q) => q.id).join() === this.renditions.map((q) => q.id).join()) return;
+    this.renditions = Object.freeze([...next]);
+    this.emit("qualities-changed", this.renditions);
   }
 
   /**
@@ -457,6 +464,9 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
   }
 
   private attach(transport: ViewTransport): void {
+    transport.onQualitiesChanged?.(() => {
+      if (this.transport === transport) this.refreshQualities();
+    });
     transport.onQualityChanged?.((change) => {
       // A candidate still proving itself may switch level before it is
       // accepted; publishQualities announces the state it was accepted in.

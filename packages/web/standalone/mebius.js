@@ -43074,6 +43074,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       /** Aborts this attempt's element listeners; see start(). */
       this.listeners = null;
       this.qualityCb = null;
+      this.qualitiesCb = null;
       /** Last change handed to qualityCb, so an unchanged state is not re-announced. */
       this.announced = "";
       /** The playlist address before any `q` filter; see masterUrl(). */
@@ -43087,6 +43088,9 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
     onQualityChanged(cb) {
       this.qualityCb = cb;
+    }
+    onQualitiesChanged(cb) {
+      this.qualitiesCb = cb;
     }
     /** Allowed rungs the playlist actually carries, once hls.js has read it. */
     qualities() {
@@ -43194,7 +43198,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.hls = hls;
       hls.on(Hls2.Events.ERROR, (_evt, data) => {
         var _a, _b;
-        if (this.level !== -1 && isMissingRung((_a = data.response) == null ? void 0 : _a.code)) {
+        if (this.level !== -1 && data.details === Hls2.ErrorDetails.LEVEL_LOAD_ERROR && isMissingRung((_a = data.response) == null ? void 0 : _a.code)) {
           this.prefs.selected = "auto";
           void this.applyQuality();
           return;
@@ -43203,10 +43207,12 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       });
       if (this.renditions.length > 0) {
         hls.on(Hls2.Events.MANIFEST_PARSED, () => {
+          var _a;
           this.applyCap();
           this.level = this.pinnedLevel();
           hls.loadLevel = this.level;
           this.announce();
+          (_a = this.qualitiesCb) == null ? void 0 : _a.call(this);
         });
         hls.on(Hls2.Events.LEVEL_SWITCHED, () => this.announce());
       }
@@ -43504,10 +43510,16 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.player = player;
       player.on((_a = flvjs.Events.ERROR) != null ? _a : "error", (_type, _detail, info) => {
         var _a2;
-        if (pinnedRung(this.ladder, this.prefs) && isMissingRung(info == null ? void 0 : info.code)) {
-          this.prefs.selected = "auto";
-          void this.applyQuality();
-          return;
+        if (this.rung && isMissingRung(info == null ? void 0 : info.code)) {
+          if (pinnedRung(this.ladder, this.prefs)) {
+            this.prefs.selected = "auto";
+            if (pickRung(this.ladder, this.prefs) !== this.rung) {
+              void this.applyQuality();
+              return;
+            }
+          }
+          if (this.stepDown()) return;
+          this.announce();
         }
         (_a2 = this.bufferingCb) == null ? void 0 : _a2.call(this);
       });
@@ -43571,10 +43583,20 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.stallTimes = this.stallTimes.filter((t) => now2 - t < STEP_DOWN_WINDOW_MS);
       this.stallTimes.push(now2);
       if (this.stallTimes.length < STEP_DOWN_STALLS) return;
+      this.stepDown();
+    }
+    /**
+     * Reopen one allowed rung below the open one; false at the floor (the lowest
+     * allowed rung), where there is nowhere left to go.
+     */
+    stepDown() {
+      if (!this.rung) return false;
       const rungs = allowedRungs(this.ladder, this.prefs.allowed);
       const i = rungs.indexOf(this.rung);
       const lower = i >= 0 ? rungs[i + 1] : void 0;
-      if (lower) void this.reopen(lower);
+      if (!lower) return false;
+      void this.reopen(lower);
+      return true;
     }
     async stop() {
       var _a;
@@ -44393,23 +44415,26 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      * failover. No effect without a ladder.
      */
     async setAllowedQualities(ids) {
-      var _a, _b, _c;
+      var _a, _b;
       if (ids !== null && (!Array.isArray(ids) || ids.some((id) => typeof id !== "string"))) {
         throw mebiusError("UNKNOWN", "setAllowedQualities takes an array of quality ids, or null.");
       }
       this.prefs.allowed = ids && ids.length > 0 ? [...ids] : null;
-      if ((_a = this.transport) == null ? void 0 : _a.qualities) {
-        const next = this.transport.qualities();
-        if (next.map((q) => q.id).join() !== this.renditions.map((q) => q.id).join()) {
-          this.renditions = Object.freeze([...next]);
-          this.emit("qualities-changed", this.renditions);
-        }
-      }
+      await ((_b = (_a = this.transport) == null ? void 0 : _a.applyQuality) == null ? void 0 : _b.call(_a));
+      this.refreshQualities();
       const picked = this.prefs.selected;
       if (picked !== "auto" && this.renditions.length > 0 && !this.renditions.some((q) => q.id === picked)) {
         this.prefs.selected = "auto";
       }
-      await ((_c = (_b = this.transport) == null ? void 0 : _b.applyQuality) == null ? void 0 : _c.call(_b));
+    }
+    /** Re-read the serving route's list, and announce it only if it changed. */
+    refreshQualities() {
+      var _a;
+      if (!((_a = this.transport) == null ? void 0 : _a.qualities)) return;
+      const next = this.transport.qualities();
+      if (next.map((q) => q.id).join() === this.renditions.map((q) => q.id).join()) return;
+      this.renditions = Object.freeze([...next]);
+      this.emit("qualities-changed", this.renditions);
     }
     /**
      * Wall-clock time (Unix ms) currently on screen, or `null` when the active
@@ -44443,8 +44468,11 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       if (current && this.renditions.length > 0) this.emit("quality-changed", current);
     }
     attach(transport) {
-      var _a;
-      (_a = transport.onQualityChanged) == null ? void 0 : _a.call(transport, (change) => {
+      var _a, _b;
+      (_a = transport.onQualitiesChanged) == null ? void 0 : _a.call(transport, () => {
+        if (this.transport === transport) this.refreshQualities();
+      });
+      (_b = transport.onQualityChanged) == null ? void 0 : _b.call(transport, (change) => {
         if (this.transport === transport && this.renditions.length > 0) this.emit("quality-changed", change);
       });
       transport.onEnded(() => {

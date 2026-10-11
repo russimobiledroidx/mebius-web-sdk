@@ -370,12 +370,20 @@ export class FlvViewTransport implements ViewTransport {
     );
     this.player = player;
     player.on(flvjs.Events.ERROR ?? "error", (_type, _detail, info) => {
-      // A pinned rung the vendor never produced (the source was smaller than
-      // it) answers 403/404. That is a reason to drop the pin, not the route.
-      if (pinnedRung(this.ladder, this.prefs) && isMissingRung((info as { code?: number } | undefined)?.code)) {
-        this.prefs.selected = "auto";
-        void this.applyQuality();
-        return;
+      // A rung the vendor never produced (the source was smaller than it)
+      // answers 403/404. That is a reason to leave the rung, not the route: a
+      // pin falls back to auto, and auto steps down past it.
+      if (this.rung && isMissingRung((info as { code?: number } | undefined)?.code)) {
+        if (pinnedRung(this.ladder, this.prefs)) {
+          this.prefs.selected = "auto";
+          // Auto may land on the very rung that just failed; step past it then.
+          if (pickRung(this.ladder, this.prefs) !== this.rung) {
+            void this.applyQuality();
+            return;
+          }
+        }
+        if (this.stepDown()) return;
+        this.announce(); // at the floor: still say the pin is gone
       }
       this.bufferingCb?.();
     });
@@ -444,11 +452,21 @@ export class FlvViewTransport implements ViewTransport {
     this.stallTimes = this.stallTimes.filter((t) => now - t < STEP_DOWN_WINDOW_MS);
     this.stallTimes.push(now);
     if (this.stallTimes.length < STEP_DOWN_STALLS) return;
-    // Within the allowed rungs only: the lowest allowed is the floor.
+    this.stepDown();
+  }
+
+  /**
+   * Reopen one allowed rung below the open one; false at the floor (the lowest
+   * allowed rung), where there is nowhere left to go.
+   */
+  private stepDown(): boolean {
+    if (!this.rung) return false;
     const rungs = allowedRungs(this.ladder, this.prefs.allowed);
     const i = rungs.indexOf(this.rung);
     const lower = i >= 0 ? rungs[i + 1] : undefined;
-    if (lower) void this.reopen(lower);
+    if (!lower) return false;
+    void this.reopen(lower);
+    return true;
   }
 
   /** True when playback only started because the element had to be muted. */

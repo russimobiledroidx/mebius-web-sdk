@@ -77,6 +77,8 @@ export interface ViewTransport {
    */
   applyQuality?(): Promise<void>;
   onQualityChanged?(cb: (change: QualityChange) => void): void;
+  /** The list qualities() returns changed on its own, e.g. a reloaded playlist. */
+  onQualitiesChanged?(cb: () => void): void;
 }
 
 /**
