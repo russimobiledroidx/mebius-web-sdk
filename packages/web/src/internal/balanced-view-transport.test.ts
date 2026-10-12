@@ -142,6 +142,23 @@ describe("syncLiveEdge", () => {
 // epochMs, and a transport returning null here means that comparison never
 // runs. HLS has EXT-X-PROGRAM-DATE-TIME to read; FLV has no such signal, so
 // this is necessarily an estimate, not a measurement.
+describe("FlvViewTransport.stop", () => {
+  it("clears the speed hold, so a route reopened on the same element can correct at once", async () => {
+    const v = Object.assign(video(96, 100), { removeAttribute() {}, load() {} }); // 4s behind
+    syncLiveEdge(v, DEFAULT_BALANCED_TARGET_S, 0);
+    expect(v.playbackRate).toBe(1.05); // a speed change: the 3s hold starts
+
+    const t = new FlvViewTransport({} as SignalingClient, "/d/fast/s1");
+    (t as unknown as { video: unknown }).video = v;
+    await t.stop();
+    expect(v.playbackRate).toBe(1);
+
+    v.currentTime = 100 - 0.3; // the next route opens on a nearly empty buffer
+    syncLiveEdge(v, DEFAULT_BALANCED_TARGET_S, 1000); // well inside the old hold
+    expect(v.playbackRate).toBe(0.95);
+  });
+});
+
 describe("FlvViewTransport.playheadEpochMs", () => {
   it("estimates behind the wall clock rather than returning null", () => {
     const t = new FlvViewTransport({} as SignalingClient, "/d/fast/s1");

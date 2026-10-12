@@ -43646,6 +43646,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.flvjs = null;
       if (this.video) {
         this.video.playbackRate = 1;
+        lastRateChange.delete(this.video);
         this.video.removeAttribute("src");
         this.video.load();
       }

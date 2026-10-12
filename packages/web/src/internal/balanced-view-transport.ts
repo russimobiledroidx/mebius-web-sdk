@@ -66,8 +66,11 @@ const LIVE_FLV_CONFIG = {
 } as const;
 
 /**
- * Default seconds of video held ahead of the picture on this route, when the
- * app states no preference. See PlayerOptions.targetLatencyMs.
+ * Default target, in seconds of video ahead of the picture on this route, when
+ * the app states no preference. See PlayerOptions.targetLatencyMs. It is where
+ * a jump lands, not a level held exactly: the bands below leave the buffer
+ * anywhere between ~0.5s and ~3.5s (after a rebuild it settles near 1s),
+ * instead of under 1s.
  *
  * 1.8, inside the 1.5-2s a CDN edge's jitter actually needs. 0.9.1 tuned this
  * route for latency and production paid for it: viewers sat on 0.1-0.8s of
@@ -553,6 +556,8 @@ export class FlvViewTransport implements ViewTransport {
       // running slightly fast or slow, and the next route to use this element
       // would inherit that with no idea where it came from.
       this.video.playbackRate = 1;
+      // The next route on this element starts with a fresh 3s speed hold.
+      lastRateChange.delete(this.video);
       this.video.removeAttribute("src");
       this.video.load();
     }
