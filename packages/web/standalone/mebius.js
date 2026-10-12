@@ -43158,6 +43158,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       } catch (e) {
         Hls2 = null;
       }
+      if (signal.aborted) return;
       if (!(Hls2 == null ? void 0 : Hls2.isSupported())) {
         if (!video.canPlayType("application/vnd.apple.mpegurl")) {
           throw mebiusError("CONNECTION_FAILED", "Scale playback is not supported in this browser.");
@@ -43510,6 +43511,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       } catch (cause) {
         throw mebiusError("CONNECTION_FAILED", "Balanced playback support failed to load.", cause);
       }
+      if (signal.aborted) return;
       const flvjs = mod.default;
       if (!flvjs.isSupported()) {
         throw mebiusError("CONNECTION_FAILED", "Balanced playback is not supported in this browser.");
@@ -43520,6 +43522,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       const firstPlay = playWithAutoplayFallback(video);
       firstPlay.catch(() => void 0);
       if (await stalledWithData(video, AUDIO_RETRY_MS)) {
+        if (signal.aborted) return;
         this.teardownPlayer();
         this.withAudio = false;
         this.attachPlayer(flvjs, video, this.rungUrl(), false);
@@ -43780,7 +43783,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
 
   // src/internal/telemetry.ts
-  var SDK_VERSION = true ? `web/${"0.10.1"}` : "web/dev";
+  var SDK_VERSION = true ? `web/${"0.10.2"}` : "web/dev";
   var FLUSH_INTERVAL_MS = 15e3;
   var MAX_BATCH = 64;
   function describeDevice() {
@@ -44238,6 +44241,13 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
        */
       this.session = 0;
       /**
+       * The route openRoute() is trying right now, before it has a picture. stop()
+       * tears it down too: it is not `transport` yet, and without this a viewer who
+       * leaves during the first seconds left it downloading into an element the app
+       * had already cleared.
+       */
+      this.opening = null;
+      /**
        * The viewer's quality choices, shared by reference with every candidate
        * route — which is what carries them across a failover or a recovery reopen.
        */
@@ -44295,13 +44305,17 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      */
     async openRoute(streamId, video) {
       const startedAtMs = Date.now();
+      const session = this.session;
       let lastError = null;
       for (const candidate of this.candidates) {
+        if (this.session !== session) return null;
         try {
           resetVideoElement(video);
           this.attach(candidate);
+          this.opening = candidate;
           await candidate.start(streamId, video);
-          if (await hasFirstFrame(video)) {
+          if (this.session === session && await hasFirstFrame(video) && this.session === session) {
+            this.opening = null;
             this.transport = candidate;
             this.playing = true;
             this.publishQualities();
@@ -44326,13 +44340,15 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         } catch (cause) {
           lastError = cause;
         }
+        if (this.session !== session) return null;
+        this.opening = null;
         await candidate.stop().catch(() => void 0);
       }
       return lastError != null ? lastError : mebiusError("CONNECTION_FAILED", "No Mebius route could play this stream.");
     }
     /** Stop playback and detach from the video element. */
     async stop() {
-      var _a, _b, _c;
+      var _a;
       this.session += 1;
       this.recoveryAttempts = 0;
       this.clearStallTimer();
@@ -44344,12 +44360,20 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.stalled = false;
       this.freeze.reset();
       this.stopStats();
-      await ((_b = this.reporter) == null ? void 0 : _b.stop());
-      this.reporter = null;
-      await ((_c = this.transport) == null ? void 0 : _c.stop());
+      const opening = this.opening;
+      this.opening = null;
+      const transport = this.transport;
       this.transport = null;
       this.video = null;
       this.playing = false;
+      try {
+        await (opening == null ? void 0 : opening.stop().catch(() => void 0));
+        await (transport == null ? void 0 : transport.stop());
+      } finally {
+        const reporter = this.reporter;
+        this.reporter = null;
+        await (reporter == null ? void 0 : reporter.stop());
+      }
     }
     /**
      * Set output volume in the range 0..1.

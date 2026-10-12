@@ -378,6 +378,8 @@ export class FlvViewTransport implements ViewTransport {
     } catch (cause) {
       throw mebiusError("CONNECTION_FAILED", "Balanced playback support failed to load.", cause);
     }
+    // stop() landed during the import: attaching now would outlive it.
+    if (signal.aborted) return;
 
     const flvjs = mod.default;
     if (!flvjs.isSupported()) {
@@ -408,6 +410,7 @@ export class FlvViewTransport implements ViewTransport {
     // when the stream has demonstrably not started, and it is far cheaper than
     // the player's 8s route watchdog for a case that is otherwise unrecoverable.
     if (await stalledWithData(video, AUDIO_RETRY_MS)) {
+      if (signal.aborted) return; // stopped meanwhile: do not reattach
       this.teardownPlayer();
       this.withAudio = false;
       this.attachPlayer(flvjs, video, this.rungUrl(), false);

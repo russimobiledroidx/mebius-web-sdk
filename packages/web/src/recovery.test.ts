@@ -59,6 +59,7 @@ interface FakeRoute extends ViewTransport {
 function route(delivers = true): FakeRoute {
   let onEnded = () => {};
   let onBuffering = () => {};
+  let stops = 0;
   const r: FakeRoute = {
     kind: "hls",
     delivers,
@@ -67,7 +68,10 @@ function route(delivers = true): FakeRoute {
     gate: null,
     async start(_id: string, video: HTMLVideoElement) {
       r.starts += 1;
+      const stopsAtStart = stops;
       if (r.gate) await r.gate;
+      // The ViewTransport contract: a stop() during start() leaves nothing running.
+      if (stops !== stopsAtStart) return;
       if (!r.delivers) throw new Error("route refused");
       r.running = true;
       // Advancing the picture is the only signal the player trusts.
@@ -75,6 +79,7 @@ function route(delivers = true): FakeRoute {
       Object.defineProperty(video, "paused", { value: false, configurable: true });
     },
     async stop() {
+      stops += 1;
       r.running = false;
     },
     async getStats(): Promise<PlaybackStats | null> {
@@ -250,5 +255,55 @@ describe("a route that keeps flapping", () => {
 
     expect(r.starts).toBe(9); // the original open, then one per loss
     expect(ended).not.toHaveBeenCalled();
+  });
+});
+
+describe("stop() while a route is still opening", () => {
+  it("stops that route and opens no other, so nothing keeps downloading for a viewer who left", async () => {
+    const opening = route();
+    const next = route();
+    let open: () => void = () => undefined;
+    opening.gate = new Promise<void>((r) => (open = r));
+    opening.delivers = false; // released after the stop: a refused start must not walk on
+    const stop = vi.spyOn(opening, "stop");
+    const p = playerWith([opening, next]);
+    const playing = p.play("s1", videoEl());
+    await vi.advanceTimersByTimeAsync(0);
+
+    await p.stop();
+    expect(stop).toHaveBeenCalledTimes(1);
+    open();
+    await playing;
+    expect(next.starts).toBe(0);
+    expect(stop).toHaveBeenCalledTimes(1); // not again: the element may belong to the next player
+  });
+
+  it("does not accept a route that delivers after the stop", async () => {
+    const opening = route();
+    let open: () => void = () => undefined;
+    opening.gate = new Promise<void>((r) => (open = r));
+    const p = playerWith([opening]);
+    const seen: string[] = [];
+    p.on("playing", () => seen.push("playing"));
+    const playing = p.play("s1", videoEl());
+    await vi.advanceTimersByTimeAsync(0);
+    await p.stop();
+    open();
+    await playing;
+    expect(seen).toEqual([]);
+    expect((p as unknown as { transport: unknown }).transport).toBeNull();
+  });
+});
+
+describe("stop() order", () => {
+  it("tears the route down before the telemetry flush, which is a network request", async () => {
+    const r = route();
+    const order: string[] = [];
+    r.stop = async () => void order.push("route");
+    const p = playerWith([r]);
+    await p.play("s1", videoEl());
+    (p as unknown as { reporter: { stop(): Promise<void> } }).reporter = { stop: async () => void order.push("telemetry") };
+    await p.stop();
+    expect(order).toEqual(["route", "telemetry"]);
   });
 });

@@ -124,6 +124,13 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
    */
   private session = 0;
   /**
+   * The route openRoute() is trying right now, before it has a picture. stop()
+   * tears it down too: it is not `transport` yet, and without this a viewer who
+   * leaves during the first seconds left it downloading into an element the app
+   * had already cleared.
+   */
+  private opening: ViewTransport | null = null;
+  /**
    * The viewer's quality choices, shared by reference with every candidate
    * route — which is what carries them across a failover or a recovery reopen.
    */
@@ -219,8 +226,12 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     // waited through a dead edge waited, and reporting only the winning route's
     // time would hide exactly the delay worth knowing about.
     const startedAtMs = Date.now();
+    const session = this.session;
     let lastError: unknown = null;
     for (const candidate of this.candidates) {
+      // stop() landed while a route was opening. It already stopped that route,
+      // and walking on would open the next one for a player nobody is watching.
+      if (this.session !== session) return null;
       try {
         // Hand every route a clean element. Routes attach differently — a
         // MediaStream via srcObject, a playlist via src, MSE via attachMedia —
@@ -229,10 +240,13 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
         // its own logs looked healthy.
         resetVideoElement(video);
         this.attach(candidate);
+        this.opening = candidate;
         await candidate.start(streamId, video);
         // start() resolving only means the route was opened, not that it is
         // delivering. Confirm with the picture itself before accepting it.
-        if (await hasFirstFrame(video)) {
+        // Stopped during start(): no first frame to wait for (up to 8s) either.
+        if (this.session === session && (await hasFirstFrame(video)) && this.session === session) {
+          this.opening = null;
           this.transport = candidate;
           this.playing = true;
           // Routes may differ in what they can offer, so the list is published per
@@ -267,6 +281,10 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
       } catch (cause) {
         lastError = cause;
       }
+      // Already stopped by stop(). A second stop would reset the element, which
+      // may belong to the app's next player by now.
+      if (this.session !== session) return null;
+      this.opening = null;
       // Tear the dead route down before opening the next one: leaving it attached
       // keeps a peer connection or a media source bound to the same element, and
       // the next route then renders into a element that is not free.
@@ -290,12 +308,23 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     this.stalled = false;
     this.freeze.reset();
     this.stopStats();
-    await this.reporter?.stop();
-    this.reporter = null;
-    await this.transport?.stop();
+    const opening = this.opening;
+    this.opening = null;
+    const transport = this.transport;
     this.transport = null;
     this.video = null;
     this.playing = false;
+    // Routes first, telemetry after: the final flush is a network request, and
+    // while it was awaited first the route kept downloading — and the app's next
+    // player on this element could be reset by this one's late teardown.
+    try {
+      await opening?.stop().catch(() => undefined);
+      await transport?.stop();
+    } finally {
+      const reporter = this.reporter;
+      this.reporter = null;
+      await reporter?.stop();
+    }
   }
 
   /**

@@ -1,5 +1,11 @@
 # @mebius-io/web
 
+## 0.10.2
+
+### Patch Changes
+
+- `stop()` now also stops a route that is still opening, and tears routes down before the final telemetry flush. A viewer who left during the first seconds no longer leaves a route downloading into an element the app has already cleared, and an app that reuses the element for its next player (room switch) is no longer reset by the old player's late teardown. FLV and HLS routes stopped while their library is still loading attach nothing.
+
 ## 0.10.1
 
 ### Patch Changes
