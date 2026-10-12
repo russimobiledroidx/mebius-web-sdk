@@ -1,5 +1,16 @@
 # @mebius-io/web
 
+## 0.10.1
+
+### Patch Changes
+
+- Smoother playback on the `"balanced"` / `fast` route. The player now holds
+  about 1.8s of video ahead of the picture (was effectively 0.1-0.8s), catches up
+  gently (1.05x) only when more than ~3.5s behind, jumps only past ~8s, slows down
+  (0.95x) only when the buffer is nearly empty, and changes speed at most once
+  every 3s. Ordinary CDN jitter no longer causes repeated stalls or audible speed
+  hunting, at the cost of up to a second of extra delay.
+
 ## 0.10.0
 
 ### Minor Changes

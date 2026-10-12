@@ -68,32 +68,55 @@ const LIVE_FLV_CONFIG = {
 /**
  * Default seconds of video held ahead of the picture on this route, when the
  * app states no preference. See PlayerOptions.targetLatencyMs.
- */
-export const DEFAULT_BALANCED_TARGET_S = 2;
-
-/**
- * Speed used to close a gap, and to open one.
  *
- * Correcting drift by JUMPING the playhead is what this replaced, and the jump
- * was itself a visible glitch — one that fired every time the buffer recovered,
- * so the route meant to be the smooth one produced a stutter as a matter of
- * routine. Speed is invisible; 1.1 is the ceiling, above it the pitch shift
- * starts to be heard. 1.05 was quieter but took ~100s to win back 5s, which on
- * live sport reads as "late"; 1.1 halves that.
+ * 1.8, inside the 1.5-2s a CDN edge's jitter actually needs. 0.9.1 tuned this
+ * route for latency and production paid for it: viewers sat on 0.1-0.8s of
+ * buffer, ordinary CDN jitter emptied it three times a minute, and every empty
+ * buffer is a visible freeze. Smooth beats the last second of latency here.
  */
-const CATCH_UP_RATE = 1.1;
-const BUILD_UP_RATE = 0.98;
+export const DEFAULT_BALANCED_TARGET_S = 1.8;
 
 /**
- * Seconds past the target where speed alone would take too long, so the
- * playhead jumps instead. Additive, not a multiple of target: at the default 2s
- * target a multiple of 4 let a viewer sit 8s behind before anything but a 5%
- * speed-up happened.
+ * Speeds used to close a gap and to rebuild one. Both stay within 5% of normal,
+ * where the pitch shift is not heard. 1.1 (0.9.1) was audible and drained the
+ * cushion faster than the edge refilled it, which is how it hunted 0.98<->1.1.
  */
-const SEEK_ABOVE_TARGET_S = 2;
-/** Drift band around the target that is left alone, as multiples of target. */
-const CATCH_UP_ABOVE = 1.5;
-const BUILD_UP_BELOW = 0.9;
+const CATCH_UP_RATE = 1.05;
+const BUILD_UP_RATE = 0.95;
+
+/**
+ * The bands, in seconds of buffer ahead of the picture. Each correction starts
+ * at one threshold and stops at another, closer to the target — that gap is the
+ * hysteresis that keeps the rate from flipping on every jittery reading.
+ *
+ *   - above target + SEEK_ABOVE_TARGET_S (8s at the default): jump to target;
+ *     at 1.05x that much drift would take minutes to win back.
+ *   - above target + CATCH_UP_START_S (3.5s): play at 1.05x until back within
+ *     target + CATCH_UP_STOP_S (2.2s).
+ *   - below SLOW_BELOW_S (0.5s): play at 0.95x until the cushion is back to
+ *     SLOW_STOP_S (1s). Never slower than 1.0x anywhere else: a thin-ish
+ *     buffer is normal jitter, and slowing on it is what made the rate hunt.
+ *   - otherwise: 1.0x, and leave it alone.
+ *
+ * ponytail: fixed bands, no jitter estimate. If an edge's jitter ever needs
+ * more than ~1.5s, raise the target (or targetLatencyMs) before adding one.
+ */
+const SEEK_ABOVE_TARGET_S = 6.2;
+const CATCH_UP_START_S = 1.7;
+const CATCH_UP_STOP_S = 0.4;
+const SLOW_BELOW_S = 0.5;
+const SLOW_STOP_S = 1;
+
+/**
+ * Minimum time between two speed changes on one element. Without it a reading
+ * that sits on a threshold flips the rate four times a second (once per
+ * `timeupdate`), which is audible and buys nothing. A jump is not held back
+ * by this: it is the correction for drift that speed could not fix.
+ */
+const RATE_HOLD_MS = 3000;
+
+/** When each element's speed last changed; see RATE_HOLD_MS. */
+const lastRateChange = new WeakMap<HTMLVideoElement, number>();
 
 /**
  * How long the first attempt gets to produce a frame before the audio-less
@@ -184,14 +207,16 @@ function stalledWithData(video: HTMLVideoElement, ms: number): Promise<boolean> 
  * buffer could only ever oscillate between "too thin to protect anything" and
  * "about to be thrown away".
  *
- * Four bands, with a dead zone between them so the correction cannot oscillate:
- * more than 2s past target, jump (speed would take too long); somewhat behind, play
- * slightly fast; near target, leave alone; too close to the edge, play slightly
- * slow until the cushion is rebuilt.
+ * Four bands with hysteresis, and at most one speed change per RATE_HOLD_MS;
+ * see the constants above for the numbers and why.
  *
  * Returns true when it jumped, so the caller can tell its own seek from a stall.
  */
-export function syncLiveEdge(video: HTMLVideoElement, targetS = DEFAULT_BALANCED_TARGET_S): boolean {
+export function syncLiveEdge(
+  video: HTMLVideoElement,
+  targetS = DEFAULT_BALANCED_TARGET_S,
+  nowMs = Date.now(),
+): boolean {
   const ranges = video.buffered;
   if (ranges.length === 0) return false;
   const edge = ranges.end(ranges.length - 1);
@@ -200,17 +225,25 @@ export function syncLiveEdge(video: HTMLVideoElement, targetS = DEFAULT_BALANCED
   if (drift > targetS + SEEK_ABOVE_TARGET_S) {
     video.currentTime = edge - targetS;
     video.playbackRate = 1;
+    lastRateChange.set(video, nowMs);
     return true;
   }
-  if (drift > targetS * CATCH_UP_ABOVE) {
-    video.playbackRate = CATCH_UP_RATE;
-    return false;
+
+  // A target below the slow band (an app asking for very low delay) shrinks
+  // the band with it, or the route would play slow forever.
+  const slowBelow = Math.min(SLOW_BELOW_S, targetS / 2);
+  const slowStop = Math.min(SLOW_STOP_S, targetS);
+  const rate = video.playbackRate;
+  let next = 1;
+  if (drift < slowBelow || (rate < 1 && drift < slowStop)) next = BUILD_UP_RATE;
+  else if (drift > targetS + CATCH_UP_START_S || (rate > 1 && drift > targetS + CATCH_UP_STOP_S)) {
+    next = CATCH_UP_RATE;
   }
-  if (drift < targetS * BUILD_UP_BELOW) {
-    video.playbackRate = BUILD_UP_RATE;
-    return false;
-  }
-  video.playbackRate = 1;
+
+  if (next === rate) return false;
+  if (nowMs - (lastRateChange.get(video) ?? -Infinity) < RATE_HOLD_MS) return false;
+  video.playbackRate = next;
+  lastRateChange.set(video, nowMs);
   return false;
 }
 
