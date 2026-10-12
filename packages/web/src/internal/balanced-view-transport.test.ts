@@ -15,74 +15,125 @@ function video(currentTime: number, bufferedEnd: number | null): HTMLVideoElemen
 }
 
 // The cushion of arrived-but-unshown video is what absorbs an unsteady network.
-// The previous policy threw it away every time it recovered — and did so with a
-// seek, which was a visible stutter of its own. These pin down that it is now
-// held, and corrected by speed rather than by jumping.
+// 0.9.1 ran it at 0.1-0.8s and CDN jitter froze the picture three times a
+// minute while the speed hunted 0.98<->1.1. These pin down the smooth policy:
+// a ~1.8s cushion, corrections within 5% of normal speed, hysteresis between
+// starting and stopping one, and no more than one speed change per 3s.
 describe("syncLiveEdge", () => {
   const T = DEFAULT_BALANCED_TARGET_S;
+  const at = (drift: number, rate = 1) => {
+    const v = video(100 - drift, 100);
+    v.playbackRate = rate;
+    return v;
+  };
 
-  it("leaves the picture alone when the cushion is about right", () => {
-    const v = video(20 - T, 20);
-    syncLiveEdge(v);
-    expect(v.currentTime).toBe(20 - T);
-    expect(v.playbackRate).toBe(1);
+  it("targets a cushion of 1.5-2s by default", () => {
+    expect(T).toBeGreaterThanOrEqual(1.5);
+    expect(T).toBeLessThanOrEqual(2);
   });
 
-  it("plays slightly fast when it has drifted behind, without jumping", () => {
-    const before = 20 - T * 2;
-    const v = video(before, 20);
-    syncLiveEdge(v);
-    expect(v.currentTime).toBe(before); // no seek — that was the old stutter
-    expect(v.playbackRate).toBeGreaterThan(1);
-    expect(v.playbackRate).toBeLessThanOrEqual(1.1); // above this the pitch is audible
+  it.each([
+    // drift, expected rate, seeks?
+    [1.8, 1, false], // steady state: leave it alone
+    [1, 1, false], // thin but normal jitter: never slow above 0.5s
+    [3.4, 1, false], // somewhat behind, not yet worth correcting
+    [4, 1.05, false], // gentle catch-up, inaudible
+    [7.9, 1.05, false],
+    [10, 1, true], // past ~8s: jump back to target
+    [0.3, 0.95, false], // nearly empty: rebuild the cushion slowly
+  ])("drift %ss → rate %s, seek %s", (drift, rate, seeks) => {
+    const v = at(drift);
+    expect(syncLiveEdge(v, T, 0)).toBe(seeks);
+    expect(v.playbackRate).toBe(rate);
+    expect(v.currentTime).toBeCloseTo(seeks ? 100 - T : 100 - drift);
   });
 
-  it("plays slightly slow to rebuild a cushion that is too thin", () => {
-    const v = video(19.9, 20); // hard against the live edge, nothing in reserve
-    syncLiveEdge(v);
-    expect(v.currentTime).toBe(19.9);
-    expect(v.playbackRate).toBeLessThan(1);
-    expect(v.playbackRate).toBeGreaterThanOrEqual(0.95);
+  it("keeps catching up until back near the target, not just under the start threshold", () => {
+    const v = at(3, 1.05);
+    syncLiveEdge(v, T, 10_000);
+    expect(v.playbackRate).toBe(1.05); // 3s: still above target + 0.4
+    const back = at(2.1, 1.05);
+    syncLiveEdge(back, T, 10_000);
+    expect(back.playbackRate).toBe(1);
   });
 
-  it("jumps only when speed alone would take minutes to close the gap", () => {
-    const v = video(0, 60);
-    syncLiveEdge(v);
-    expect(v.currentTime).toBeCloseTo(60 - T);
-    expect(v.playbackRate).toBe(1);
+  it("keeps rebuilding until the cushion is back to 1s", () => {
+    const v = at(0.8, 0.95);
+    syncLiveEdge(v, T, 10_000);
+    expect(v.playbackRate).toBe(0.95);
+    const rebuilt = at(1.1, 0.95);
+    syncLiveEdge(rebuilt, T, 10_000);
+    expect(rebuilt.playbackRate).toBe(1);
+  });
+
+  it("changes speed at most once per 3s on one element", () => {
+    const v = at(4);
+    syncLiveEdge(v, T, 0);
+    expect(v.playbackRate).toBe(1.05);
+    v.currentTime = 100 - 0.3; // buffer collapsed right after
+    syncLiveEdge(v, T, 1000);
+    expect(v.playbackRate).toBe(1.05); // held
+    syncLiveEdge(v, T, 3000);
+    expect(v.playbackRate).toBe(0.95);
+  });
+
+  it("does not oscillate across a jittery sequence", () => {
+    // 60s of timeupdates (4/s) with the cushion wandering 0.6-3.4s, the way an
+    // edge's jitter moves it: every reading is inside the leave-alone band.
+    const v = video(0, 0);
+    let edge = 100;
+    let rateChanges = 0;
+    for (let i = 0; i < 240; i++) {
+      const drift = 2 + 1.4 * Math.sin(i * 0.7) * Math.cos(i * 0.13);
+      edge += 0.25;
+      v.currentTime = edge - drift;
+      (v as unknown as { buffered: unknown }).buffered = { length: 1, end: () => edge };
+      const before = v.playbackRate;
+      syncLiveEdge(v, T, i * 250);
+      if (v.playbackRate !== before) rateChanges++;
+    }
+    expect(rateChanges).toBe(0);
+
+    // Now a buffer that keeps crossing the catch-up and slow thresholds: the
+    // hold bounds the changes to one per 3s, and hysteresis keeps it well below.
+    const w = video(0, 0);
+    const rates: number[] = [];
+    for (let i = 0; i < 240; i++) {
+      const drift = i % 8 < 4 ? 0.4 : 4.2; // flips every second
+      edge += 0.25;
+      w.currentTime = edge - drift;
+      (w as unknown as { buffered: unknown }).buffered = { length: 1, end: () => edge };
+      const before = w.playbackRate;
+      syncLiveEdge(w, T, 100_000 + i * 250);
+      if (w.playbackRate !== before) rates.push(i * 250);
+    }
+    for (let k = 1; k < rates.length; k++) {
+      expect(rates[k]! - rates[k - 1]!).toBeGreaterThanOrEqual(3000);
+    }
+    expect(rates.length).toBeGreaterThan(0);
+    expect(rates.length).toBeLessThanOrEqual(20);
   });
 
   it("honours an explicit target", () => {
-    const v = video(15, 20); // 5s of cushion
-    syncLiveEdge(v, 5);
+    const v = video(95, 100); // 5s of cushion
+    syncLiveEdge(v, 5, 0);
     expect(v.playbackRate).toBe(1); // on target for this caller
-    const tight = video(17, 20); // 3s of cushion
-    syncLiveEdge(tight, 1); // far too much for this caller: catch up
-    expect(tight.playbackRate).toBeGreaterThan(1);
+    const tight = video(97, 100); // 3s of cushion
+    syncLiveEdge(tight, 1, 0); // well past 1 + 1.7 for this caller: catch up
+    expect(tight.playbackRate).toBe(1.05);
+  });
+
+  it("scales the slow band down for a very low target instead of playing slow forever", () => {
+    const v = video(99.6, 100); // 0.4s of cushion, on target for 0.4
+    syncLiveEdge(v, 0.4, 0);
+    expect(v.playbackRate).toBe(1);
   });
 
   it("does nothing with an empty buffer", () => {
     const v = video(0, null);
-    syncLiveEdge(v);
+    expect(syncLiveEdge(v)).toBe(false);
     expect(v.currentTime).toBe(0);
-  });
-
-  // Live sport: a viewer 3-8s behind used to get only a 5% speed-up (~100s to
-  // win back 5s). Now anything past target + 2s jumps, and the band below it
-  // catches up at 1.1.
-  it.each([
-    // drift, expected rate, seeks?
-    [1, 0.98, false], // under 0.9 × target: rebuild the cushion
-    [3, 1, false], // 1.5 × target exactly: still the dead zone
-    [3.5, 1.1, false], // between 1.5 × target and target + 2: catch up
-    [5, 1, true], // past target + 2: jump back to target
-    [9, 1, true],
-  ])("drift %ss at the default target → rate %s, seek %s", (drift, rate, seeks) => {
-    const edge = 100;
-    const v = video(edge - drift, edge);
-    syncLiveEdge(v);
-    expect(v.playbackRate).toBe(rate);
-    expect(v.currentTime).toBeCloseTo(seeks ? edge - T : edge - drift);
+    expect(v.playbackRate).toBe(1);
   });
 });
 
@@ -91,6 +142,23 @@ describe("syncLiveEdge", () => {
 // epochMs, and a transport returning null here means that comparison never
 // runs. HLS has EXT-X-PROGRAM-DATE-TIME to read; FLV has no such signal, so
 // this is necessarily an estimate, not a measurement.
+describe("FlvViewTransport.stop", () => {
+  it("clears the speed hold, so a route reopened on the same element can correct at once", async () => {
+    const v = Object.assign(video(96, 100), { removeAttribute() {}, load() {} }); // 4s behind
+    syncLiveEdge(v, DEFAULT_BALANCED_TARGET_S, 0);
+    expect(v.playbackRate).toBe(1.05); // a speed change: the 3s hold starts
+
+    const t = new FlvViewTransport({} as SignalingClient, "/d/fast/s1");
+    (t as unknown as { video: unknown }).video = v;
+    await t.stop();
+    expect(v.playbackRate).toBe(1);
+
+    v.currentTime = 100 - 0.3; // the next route opens on a nearly empty buffer
+    syncLiveEdge(v, DEFAULT_BALANCED_TARGET_S, 1000); // well inside the old hold
+    expect(v.playbackRate).toBe(0.95);
+  });
+});
+
 describe("FlvViewTransport.playheadEpochMs", () => {
   it("estimates behind the wall clock rather than returning null", () => {
     const t = new FlvViewTransport({} as SignalingClient, "/d/fast/s1");

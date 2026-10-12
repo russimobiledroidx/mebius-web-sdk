@@ -43341,12 +43341,16 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     autoCleanupMinBackwardDuration: 10,
     reuseRedirectedURL: true
   };
-  var DEFAULT_BALANCED_TARGET_S = 2;
-  var CATCH_UP_RATE = 1.1;
-  var BUILD_UP_RATE = 0.98;
-  var SEEK_ABOVE_TARGET_S = 2;
-  var CATCH_UP_ABOVE = 1.5;
-  var BUILD_UP_BELOW = 0.9;
+  var DEFAULT_BALANCED_TARGET_S = 1.8;
+  var CATCH_UP_RATE = 1.05;
+  var BUILD_UP_RATE = 0.95;
+  var SEEK_ABOVE_TARGET_S = 6.2;
+  var CATCH_UP_START_S = 1.7;
+  var CATCH_UP_STOP_S = 0.4;
+  var SLOW_BELOW_S = 0.5;
+  var SLOW_STOP_S = 1;
+  var RATE_HOLD_MS = 3e3;
+  var lastRateChange = /* @__PURE__ */ new WeakMap();
   var AUDIO_RETRY_MS = 2500;
   var UPSTREAM_LATENCY_MS = 800;
   var STEP_DOWN_STALLS = 2;
@@ -43368,7 +43372,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       video.addEventListener("timeupdate", onTime);
     });
   }
-  function syncLiveEdge(video, targetS = DEFAULT_BALANCED_TARGET_S) {
+  function syncLiveEdge(video, targetS = DEFAULT_BALANCED_TARGET_S, nowMs = Date.now()) {
+    var _a;
     const ranges = video.buffered;
     if (ranges.length === 0) return false;
     const edge = ranges.end(ranges.length - 1);
@@ -43376,17 +43381,21 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     if (drift > targetS + SEEK_ABOVE_TARGET_S) {
       video.currentTime = edge - targetS;
       video.playbackRate = 1;
+      lastRateChange.set(video, nowMs);
       return true;
     }
-    if (drift > targetS * CATCH_UP_ABOVE) {
-      video.playbackRate = CATCH_UP_RATE;
-      return false;
+    const slowBelow = Math.min(SLOW_BELOW_S, targetS / 2);
+    const slowStop = Math.min(SLOW_STOP_S, targetS);
+    const rate = video.playbackRate;
+    let next = 1;
+    if (drift < slowBelow || rate < 1 && drift < slowStop) next = BUILD_UP_RATE;
+    else if (drift > targetS + CATCH_UP_START_S || rate > 1 && drift > targetS + CATCH_UP_STOP_S) {
+      next = CATCH_UP_RATE;
     }
-    if (drift < targetS * BUILD_UP_BELOW) {
-      video.playbackRate = BUILD_UP_RATE;
-      return false;
-    }
-    video.playbackRate = 1;
+    if (next === rate) return false;
+    if (nowMs - ((_a = lastRateChange.get(video)) != null ? _a : -Infinity) < RATE_HOLD_MS) return false;
+    video.playbackRate = next;
+    lastRateChange.set(video, nowMs);
     return false;
   }
   var FlvViewTransport = class {
@@ -43637,6 +43646,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.flvjs = null;
       if (this.video) {
         this.video.playbackRate = 1;
+        lastRateChange.delete(this.video);
         this.video.removeAttribute("src");
         this.video.load();
       }
@@ -43770,7 +43780,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
 
   // src/internal/telemetry.ts
-  var SDK_VERSION = true ? `web/${"0.10.0"}` : "web/dev";
+  var SDK_VERSION = true ? `web/${"0.10.1"}` : "web/dev";
   var FLUSH_INTERVAL_MS = 15e3;
   var MAX_BATCH = 64;
   function describeDevice() {
