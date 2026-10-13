@@ -42975,14 +42975,14 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       await pc.setRemoteDescription({ type: "answer", sdp: answer });
     }
     async stop() {
-      var _a;
       this.cursor = null;
-      await this.signaling.deleteResource(this.resourceUrl);
-      this.resourceUrl = null;
-      (_a = this.pc) == null ? void 0 : _a.close();
+      const { pc, resourceUrl, video } = this;
       this.pc = null;
-      if (this.video) resetVideoElement(this.video);
+      this.resourceUrl = null;
       this.video = null;
+      pc == null ? void 0 : pc.close();
+      if (video) resetVideoElement(video);
+      await this.signaling.deleteResource(resourceUrl);
     }
     /**
      * Read what the connection actually did since the last reading.
@@ -44297,7 +44297,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         { signal: this.elementListeners.signal }
       );
       this.streamId = streamId;
-      const failure = await this.openRoute(streamId, video);
+      const failure = await this.openRoute(streamId, video, session);
       if (failure === null) return;
       (_a = this.elementListeners) == null ? void 0 : _a.abort();
       this.elementListeners = null;
@@ -44317,9 +44317,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      * Returns `null` when a route was accepted, or the error to report when none
      * of them produced a picture.
      */
-    async openRoute(streamId, video) {
+    async openRoute(streamId, video, session = this.session) {
       const startedAtMs = Date.now();
-      const session = this.session;
       const abort = new AbortController();
       this.openAbort = abort;
       let lastError = null;
@@ -44586,11 +44585,11 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     async releaseRoute() {
       this.stopStats();
       const transport = this.transport;
+      const reporter = this.reporter;
       this.transport = null;
+      this.reporter = null;
       this.playing = false;
       await (transport == null ? void 0 : transport.stop().catch(() => void 0));
-      const reporter = this.reporter;
-      this.reporter = null;
       await (reporter == null ? void 0 : reporter.stop());
     }
     clearStallTimer() {
@@ -44639,11 +44638,9 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
           await new Promise((r) => setTimeout(r, wait));
           if (this.session !== session) return;
           await this.releaseRoute();
-          const failure = await this.openRoute(streamId, video);
-          if (this.session !== session) {
-            await this.releaseRoute();
-            return;
-          }
+          if (this.session !== session) return;
+          const failure = await this.openRoute(streamId, video, session);
+          if (this.session !== session) return;
           if (failure === null) return;
         }
         if (this.session !== session) return;

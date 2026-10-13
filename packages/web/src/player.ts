@@ -205,7 +205,7 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     );
 
     this.streamId = streamId;
-    const failure = await this.openRoute(streamId, video);
+    const failure = await this.openRoute(streamId, video, session);
     if (failure === null) return;
 
     // Release the element before giving up. Holding ownership of an element we
@@ -231,12 +231,17 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
    * Returns `null` when a route was accepted, or the error to report when none
    * of them produced a picture.
    */
-  private async openRoute(streamId: string, video: HTMLVideoElement): Promise<unknown | null> {
+  private async openRoute(
+    streamId: string,
+    video: HTMLVideoElement,
+    // The caller's session, not re-read here: a recovery whose player was
+    // stopped and replayed meanwhile must not open routes for the new session.
+    session = this.session,
+  ): Promise<unknown | null> {
     // Measured across route attempts, not from the accepted route: a viewer who
     // waited through a dead edge waited, and reporting only the winning route's
     // time would hide exactly the delay worth knowing about.
     const startedAtMs = Date.now();
-    const session = this.session;
     const abort = new AbortController();
     this.openAbort = abort;
     let lastError: unknown = null;
@@ -566,11 +571,11 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     // Taken before the await, so a stop() landing meanwhile does not stop it
     // twice; the route before the telemetry flush, as in stop().
     const transport = this.transport;
+    const reporter = this.reporter;
     this.transport = null;
+    this.reporter = null;
     this.playing = false;
     await transport?.stop().catch(() => undefined);
-    const reporter = this.reporter;
-    this.reporter = null;
     await reporter?.stop();
   }
 
@@ -629,15 +634,14 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
         if (this.session !== session) return;
 
         await this.releaseRoute();
+        // stop() (and maybe a new play()) landed during the release. Whatever is
+        // attached now belongs to that new session: touch nothing.
+        if (this.session !== session) return;
 
-        const failure = await this.openRoute(streamId, video);
-        if (this.session !== session) {
-          // stop() landed while the route was opening. stop() tore down the
-          // opening route and openRoute accepts nothing after it; this release
-          // only clears what may be left over.
-          await this.releaseRoute();
-          return;
-        }
+        const failure = await this.openRoute(streamId, video, session);
+        // stop() landed while the route was opening: it tore that route down,
+        // and openRoute accepts nothing after a stop.
+        if (this.session !== session) return;
         if (failure === null) return;
       }
       if (this.session !== session) return;

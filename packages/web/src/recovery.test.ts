@@ -351,3 +351,44 @@ describe("stop() around play(), audit follow-ups", () => {
     await playing;
   });
 });
+
+describe("an old recovery after stop() + play()", () => {
+  it("stopped while the recovery was opening a route: the new session keeps playing", async () => {
+    const r = route();
+    const p = playerWith([r]);
+    await p.play("s1", videoEl());
+    let open: () => void = () => undefined;
+    r.gate = new Promise<void>((g) => (open = g));
+    r.fireEnded();
+    await vi.advanceTimersByTimeAsync(1_500); // recovery is inside the gated start()
+    await p.stop();
+    r.gate = null;
+    await p.play("s1", videoEl());
+    expect(r.running).toBe(true);
+    open(); // the old start() settles now
+    await vi.advanceTimersByTimeAsync(100);
+    expect(r.running).toBe(true);
+    expect((p as unknown as { transport: unknown }).transport).not.toBeNull();
+  });
+
+  it("stopped while the recovery was releasing the dead route: the new session keeps playing", async () => {
+    const r = route();
+    const p = playerWith([r]);
+    await p.play("s1", videoEl());
+    const plainStop = r.stop.bind(r);
+    let release: () => void = () => undefined;
+    r.stop = () => {
+      r.stop = plainStop; // only the recovery's release is slow
+      return new Promise<void>((done) => (release = () => void plainStop().then(done)));
+    };
+    r.fireEnded();
+    await vi.advanceTimersByTimeAsync(1_500); // recovery is inside releaseRoute()
+    await p.stop();
+    await p.play("s1", videoEl());
+    const starts = r.starts;
+    release();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(r.starts).toBe(starts); // the old recovery opened nothing more
+    expect((p as unknown as { transport: unknown }).transport).not.toBeNull();
+  });
+});
