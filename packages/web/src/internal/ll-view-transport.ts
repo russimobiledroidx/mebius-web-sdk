@@ -129,6 +129,9 @@ export class WhepViewTransport implements ViewTransport {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     await waitForIceGathering(pc);
+    // stop() (or a newer start) closed this connection meanwhile: posting its
+    // offer would create a server session for a viewer who left.
+    if (this.pc !== pc) return;
 
     const localSdp = pc.localDescription?.sdp;
     if (!localSdp) throw mebiusError("CONNECTION_FAILED", "Failed to create a local session.");
@@ -138,6 +141,11 @@ export class WhepViewTransport implements ViewTransport {
       streamId,
       localSdp,
     );
+    if (this.pc !== pc) {
+      // Stopped during the exchange: stop() had no resource to delete yet.
+      void this.signaling.deleteResource(resourceUrl).catch(() => undefined);
+      return;
+    }
     this.resourceUrl = resourceUrl;
     await pc.setRemoteDescription({ type: "answer", sdp: answer });
   }

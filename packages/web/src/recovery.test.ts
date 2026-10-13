@@ -307,3 +307,47 @@ describe("stop() order", () => {
     expect(order).toEqual(["route", "telemetry"]);
   });
 });
+
+describe("stop() around play(), audit follow-ups", () => {
+  it("a stop while play() waits for the element's previous player opens nothing", async () => {
+    const video = videoEl();
+    const first = route();
+    const p1 = playerWith([first]);
+    await p1.play("s1", video);
+    let release: () => void = () => undefined;
+    first.stop = () => new Promise<void>((r) => (release = () => r()));
+    const second = route();
+    const p2 = playerWith([second]);
+    const playing = p2.play("s1", video);
+    await vi.advanceTimersByTimeAsync(0);
+    await p2.stop();
+    release();
+    await playing;
+    expect(second.starts).toBe(0);
+  });
+
+  it("play() right after a stop() during recovery plays, instead of being refused as still recovering", async () => {
+    const r = route();
+    const p = playerWith([r]);
+    await p.play("s1", videoEl());
+    r.fireEnded(); // recovery sleeps in its backoff
+    await p.stop();
+    await p.play("s1", videoEl());
+    expect(r.starts).toBe(2);
+  });
+
+  it("play() settles as soon as stop() lands during the first-frame wait, not 8s later", async () => {
+    const r = route();
+    r.start = async () => {
+      r.starts += 1; // opens, but no picture yet
+    };
+    const p = playerWith([r]);
+    let settled = false;
+    const playing = p.play("s1", videoEl()).finally(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(0);
+    await p.stop();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(settled).toBe(true);
+    await playing;
+  });
+});

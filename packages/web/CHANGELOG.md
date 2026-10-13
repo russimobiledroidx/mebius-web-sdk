@@ -4,7 +4,7 @@
 
 ### Patch Changes
 
-- `stop()` now also stops a route that is still opening, and tears routes down before the final telemetry flush. A viewer who left during the first seconds no longer leaves a route downloading into an element the app has already cleared, and an app that reuses the element for its next player (room switch) is no longer reset by the old player's late teardown. FLV and HLS routes stopped while their library is still loading attach nothing.
+- `stop()` now also stops a route that is still opening, and tears routes down before the final telemetry flush. A viewer who left during the first seconds no longer leaves a route downloading into an element the app has already cleared, and an app that reuses the element for its next player (room switch) is no longer reset by the old player's late teardown. FLV and HLS routes stopped while their library is still loading attach nothing. A `stop()` while `play()` waits for the element's previous player now opens nothing, `play()` settles as soon as `stop()` lands (it resolves without playing; listen for `playing`), a `play()` right after a `stop()` during recovery is no longer silently refused, and a real-time (WebRTC) route stopped mid-handshake deletes the server session it created.
 
 ## 0.10.1
 

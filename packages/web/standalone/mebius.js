@@ -42959,6 +42959,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await waitForIceGathering(pc);
+      if (this.pc !== pc) return;
       const localSdp = (_a = pc.localDescription) == null ? void 0 : _a.sdp;
       if (!localSdp) throw mebiusError("CONNECTION_FAILED", "Failed to create a local session.");
       const { answer, resourceUrl } = await this.signaling.exchangeSession(
@@ -42966,6 +42967,10 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         streamId,
         localSdp
       );
+      if (this.pc !== pc) {
+        void this.signaling.deleteResource(resourceUrl).catch(() => void 0);
+        return;
+      }
       this.resourceUrl = resourceUrl;
       await pc.setRemoteDescription({ type: "answer", sdp: answer });
     }
@@ -44247,6 +44252,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
        * had already cleared.
        */
       this.opening = null;
+      /** Cuts openRoute()'s first-frame wait short when stop() lands. */
+      this.openAbort = null;
       /**
        * The viewer's quality choices, shared by reference with every candidate
        * route — which is what carries them across a failover or a recovery reopen.
@@ -44260,13 +44267,20 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         this.prefs
       );
     }
-    /** Start playing `streamId` into the given video element or selector. */
+    /**
+     * Start playing `streamId` into the given video element or selector.
+     *
+     * A stop() while this is pending makes it resolve without playing; check the
+     * `playing` event, not the resolution, for "the picture is up".
+     */
     async play(streamId, viewTarget) {
       var _a;
       if (this.playing || this.recovering) return;
       const video = resolveVideoElement(viewTarget);
+      const session = this.session;
       const previous = ELEMENT_OWNER.get(video);
       if (previous && previous !== this) await previous.stop();
+      if (this.session !== session) return;
       ELEMENT_OWNER.set(video, this);
       this.video = video;
       this.elementListeners = new AbortController();
@@ -44306,6 +44320,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     async openRoute(streamId, video) {
       const startedAtMs = Date.now();
       const session = this.session;
+      const abort = new AbortController();
+      this.openAbort = abort;
       let lastError = null;
       for (const candidate of this.candidates) {
         if (this.session !== session) return null;
@@ -44314,7 +44330,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
           this.attach(candidate);
           this.opening = candidate;
           await candidate.start(streamId, video);
-          if (this.session === session && await hasFirstFrame(video) && this.session === session) {
+          if (this.session === session && await hasFirstFrame(video, abort.signal) && this.session === session) {
             this.opening = null;
             this.transport = candidate;
             this.playing = true;
@@ -44348,7 +44364,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
     /** Stop playback and detach from the video element. */
     async stop() {
-      var _a;
+      var _a, _b;
       this.session += 1;
       this.recoveryAttempts = 0;
       this.clearStallTimer();
@@ -44360,6 +44376,9 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.stalled = false;
       this.freeze.reset();
       this.stopStats();
+      this.recovering = false;
+      (_b = this.openAbort) == null ? void 0 : _b.abort();
+      this.openAbort = null;
       const opening = this.opening;
       this.opening = null;
       const transport = this.transport;
@@ -44565,13 +44584,14 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      * fields — which TypeScript reads as "these can only be null now".
      */
     async releaseRoute() {
-      var _a, _b;
       this.stopStats();
-      await ((_a = this.reporter) == null ? void 0 : _a.stop());
-      this.reporter = null;
-      await ((_b = this.transport) == null ? void 0 : _b.stop().catch(() => void 0));
+      const transport = this.transport;
       this.transport = null;
       this.playing = false;
+      await (transport == null ? void 0 : transport.stop().catch(() => void 0));
+      const reporter = this.reporter;
+      this.reporter = null;
+      await (reporter == null ? void 0 : reporter.stop());
     }
     clearStallTimer() {
       if (this.stallTimer) clearTimeout(this.stallTimer);
@@ -44634,7 +44654,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         this.streamId = null;
         this.emit("ended", void 0);
       } finally {
-        this.recovering = false;
+        if (this.session === session) this.recovering = false;
       }
     }
     startStats() {
@@ -44664,19 +44684,23 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.statsTimer = null;
     }
   };
-  function hasFirstFrame(video) {
+  function hasFirstFrame(video, signal) {
+    if (signal == null ? void 0 : signal.aborted) return Promise.resolve(false);
     if (video.currentTime > 0 && !video.paused) return Promise.resolve(true);
     return new Promise((resolve) => {
       const done = (ok) => {
         clearTimeout(timer);
         video.removeEventListener("timeupdate", onTime);
+        signal == null ? void 0 : signal.removeEventListener("abort", onAbort);
         resolve(ok);
       };
       const onTime = () => {
         if (video.currentTime > 0) done(true);
       };
+      const onAbort = () => done(false);
       const timer = setTimeout(() => done(false), FIRST_FRAME_TIMEOUT_MS);
       video.addEventListener("timeupdate", onTime);
+      signal == null ? void 0 : signal.addEventListener("abort", onAbort);
     });
   }
 

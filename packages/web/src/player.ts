@@ -130,6 +130,8 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
    * had already cleared.
    */
   private opening: ViewTransport | null = null;
+  /** Cuts openRoute()'s first-frame wait short when stop() lands. */
+  private openAbort: AbortController | null = null;
   /**
    * The viewer's quality choices, shared by reference with every candidate
    * route — which is what carries them across a failover or a recovery reopen.
@@ -154,7 +156,12 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     );
   }
 
-  /** Start playing `streamId` into the given video element or selector. */
+  /**
+   * Start playing `streamId` into the given video element or selector.
+   *
+   * A stop() while this is pending makes it resolve without playing; check the
+   * `playing` event, not the resolution, for "the picture is up".
+   */
   async play(streamId: string, viewTarget: ViewTarget): Promise<void> {
     // `recovering` counts as playing for this guard: recovery sets `playing`
     // false while it reopens, and without this an app that calls play() on its
@@ -165,8 +172,11 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     // One element, one player. Whatever was driving it is finished, and stopping
     // it here is what keeps a second play() from leaving a live transport
     // attached to a MediaSource this one is about to replace.
+    const session = this.session;
     const previous = ELEMENT_OWNER.get(video);
     if (previous && previous !== this) await previous.stop();
+    // Stopped while the previous owner was being torn down: open nothing.
+    if (this.session !== session) return;
     ELEMENT_OWNER.set(video, this);
     this.video = video;
 
@@ -227,6 +237,8 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     // time would hide exactly the delay worth knowing about.
     const startedAtMs = Date.now();
     const session = this.session;
+    const abort = new AbortController();
+    this.openAbort = abort;
     let lastError: unknown = null;
     for (const candidate of this.candidates) {
       // stop() landed while a route was opening. It already stopped that route,
@@ -245,7 +257,7 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
         // start() resolving only means the route was opened, not that it is
         // delivering. Confirm with the picture itself before accepting it.
         // Stopped during start(): no first frame to wait for (up to 8s) either.
-        if (this.session === session && (await hasFirstFrame(video)) && this.session === session) {
+        if (this.session === session && (await hasFirstFrame(video, abort.signal)) && this.session === session) {
           this.opening = null;
           this.transport = candidate;
           this.playing = true;
@@ -308,6 +320,11 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     this.stalled = false;
     this.freeze.reset();
     this.stopStats();
+    // A recovery sleeping in its backoff exits on the session check; a play()
+    // right after this stop must not be refused as "already recovering".
+    this.recovering = false;
+    this.openAbort?.abort();
+    this.openAbort = null;
     const opening = this.opening;
     this.opening = null;
     const transport = this.transport;
@@ -546,11 +563,15 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
    */
   private async releaseRoute(): Promise<void> {
     this.stopStats();
-    await this.reporter?.stop();
-    this.reporter = null;
-    await this.transport?.stop().catch(() => undefined);
+    // Taken before the await, so a stop() landing meanwhile does not stop it
+    // twice; the route before the telemetry flush, as in stop().
+    const transport = this.transport;
     this.transport = null;
     this.playing = false;
+    await transport?.stop().catch(() => undefined);
+    const reporter = this.reporter;
+    this.reporter = null;
+    await reporter?.stop();
   }
 
   private clearStallTimer(): void {
@@ -611,11 +632,9 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
 
         const failure = await this.openRoute(streamId, video);
         if (this.session !== session) {
-          // stop() landed while the route was opening. openRoute may have just
-          // accepted one — transport attached, stats running, telemetry
-          // reporting — and stop() cannot have torn that down, because it ran
-          // when there was nothing yet to tear down. Leaving now would keep a
-          // stopped player playing.
+          // stop() landed while the route was opening. stop() tore down the
+          // opening route and openRoute accepts nothing after it; this release
+          // only clears what may be left over.
           await this.releaseRoute();
           return;
         }
@@ -637,7 +656,8 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
       this.streamId = null;
       this.emit("ended", undefined);
     } finally {
-      this.recovering = false;
+      // stop() already cleared it; a newer session's recovery owns it now.
+      if (this.session === session) this.recovering = false;
     }
   }
 
@@ -685,18 +705,22 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
  * says data arrived; a live stream that stalls right after its first buffer can
  * report ready forever without the picture moving.
  */
-function hasFirstFrame(video: HTMLVideoElement): Promise<boolean> {
+function hasFirstFrame(video: HTMLVideoElement, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false);
   if (video.currentTime > 0 && !video.paused) return Promise.resolve(true);
   return new Promise((resolve) => {
     const done = (ok: boolean) => {
       clearTimeout(timer);
       video.removeEventListener("timeupdate", onTime);
+      signal?.removeEventListener("abort", onAbort);
       resolve(ok);
     };
     const onTime = () => {
       if (video.currentTime > 0) done(true);
     };
+    const onAbort = () => done(false);
     const timer = setTimeout(() => done(false), FIRST_FRAME_TIMEOUT_MS);
     video.addEventListener("timeupdate", onTime);
+    signal?.addEventListener("abort", onAbort);
   });
 }
