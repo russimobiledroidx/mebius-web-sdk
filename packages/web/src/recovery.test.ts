@@ -392,3 +392,21 @@ describe("an old recovery after stop() + play()", () => {
     expect((p as unknown as { transport: unknown }).transport).not.toBeNull();
   });
 });
+
+describe("play() right after an un-awaited stop()", () => {
+  it("is not torn down by that stop's late teardown", async () => {
+    const r = route();
+    const start = r.start.bind(r);
+    r.start = async (id, video) => {
+      await Promise.resolve(); // a real start yields before it finishes
+      return start(id, video);
+    };
+    const p = playerWith([r]);
+    await p.play("s1", videoEl());
+    void p.stop();
+    await p.play("s1", videoEl());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.running).toBe(true);
+    expect((p as unknown as { playing: boolean }).playing).toBe(true);
+  });
+});

@@ -307,6 +307,9 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
       // the next route then renders into a element that is not free.
       await candidate.stop().catch(() => undefined);
     }
+    // stop() (and maybe a new play()) landed during that last teardown: this
+    // failure belongs to a session that is over.
+    if (this.session !== session) return null;
     return lastError ?? mebiusError("CONNECTION_FAILED", "No Mebius route could play this stream.");
   }
 
@@ -340,8 +343,10 @@ export class MebiusPlayer extends TypedEmitter<PlayerEventMap> {
     // while it was awaited first the route kept downloading — and the app's next
     // player on this element could be reset by this one's late teardown.
     try {
-      await opening?.stop().catch(() => undefined);
-      await transport?.stop();
+      // Both started now, synchronously: a play() right after an un-awaited
+      // stop() hands the same transport objects to start(), and a stop that ran
+      // a microtask later would tear that new start down.
+      await Promise.all([opening?.stop().catch(() => undefined), transport?.stop()]);
     } finally {
       const reporter = this.reporter;
       this.reporter = null;

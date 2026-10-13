@@ -44359,6 +44359,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         this.opening = null;
         await candidate.stop().catch(() => void 0);
       }
+      if (this.session !== session) return null;
       return lastError != null ? lastError : mebiusError("CONNECTION_FAILED", "No Mebius route could play this stream.");
     }
     /** Stop playback and detach from the video element. */
@@ -44385,8 +44386,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.video = null;
       this.playing = false;
       try {
-        await (opening == null ? void 0 : opening.stop().catch(() => void 0));
-        await (transport == null ? void 0 : transport.stop());
+        await Promise.all([opening == null ? void 0 : opening.stop().catch(() => void 0), transport == null ? void 0 : transport.stop()]);
       } finally {
         const reporter = this.reporter;
         this.reporter = null;
