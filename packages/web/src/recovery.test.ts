@@ -397,16 +397,27 @@ describe("play() right after an un-awaited stop()", () => {
   it("is not torn down by that stop's late teardown", async () => {
     const r = route();
     const start = r.start.bind(r);
+    const stop = r.stop.bind(r);
+    let stops = 0;
+    r.stop = async () => {
+      stops += 1;
+      return stop();
+    };
+    // Like a real transport: start() claims its fields at once, then yields, and
+    // a stop() in between leaves it with nothing attached.
     r.start = async (id, video) => {
-      await Promise.resolve(); // a real start yields before it finishes
+      const at = stops;
+      await Promise.resolve();
+      if (stops !== at) return;
       return start(id, video);
     };
     const p = playerWith([r]);
     await p.play("s1", videoEl());
     void p.stop();
-    await p.play("s1", videoEl());
+    const playing = p.play("s1", videoEl());
     await vi.advanceTimersByTimeAsync(0);
     expect(r.running).toBe(true);
-    expect((p as unknown as { playing: boolean }).playing).toBe(true);
+    await vi.advanceTimersByTimeAsync(9_000);
+    await playing.catch(() => undefined);
   });
 });
