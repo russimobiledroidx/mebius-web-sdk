@@ -59,6 +59,7 @@ interface FakeRoute extends ViewTransport {
 function route(delivers = true): FakeRoute {
   let onEnded = () => {};
   let onBuffering = () => {};
+  let stops = 0;
   const r: FakeRoute = {
     kind: "hls",
     delivers,
@@ -67,7 +68,10 @@ function route(delivers = true): FakeRoute {
     gate: null,
     async start(_id: string, video: HTMLVideoElement) {
       r.starts += 1;
+      const stopsAtStart = stops;
       if (r.gate) await r.gate;
+      // The ViewTransport contract: a stop() during start() leaves nothing running.
+      if (stops !== stopsAtStart) return;
       if (!r.delivers) throw new Error("route refused");
       r.running = true;
       // Advancing the picture is the only signal the player trusts.
@@ -75,6 +79,7 @@ function route(delivers = true): FakeRoute {
       Object.defineProperty(video, "paused", { value: false, configurable: true });
     },
     async stop() {
+      stops += 1;
       r.running = false;
     },
     async getStats(): Promise<PlaybackStats | null> {
@@ -250,5 +255,169 @@ describe("a route that keeps flapping", () => {
 
     expect(r.starts).toBe(9); // the original open, then one per loss
     expect(ended).not.toHaveBeenCalled();
+  });
+});
+
+describe("stop() while a route is still opening", () => {
+  it("stops that route and opens no other, so nothing keeps downloading for a viewer who left", async () => {
+    const opening = route();
+    const next = route();
+    let open: () => void = () => undefined;
+    opening.gate = new Promise<void>((r) => (open = r));
+    opening.delivers = false; // released after the stop: a refused start must not walk on
+    const stop = vi.spyOn(opening, "stop");
+    const p = playerWith([opening, next]);
+    const playing = p.play("s1", videoEl());
+    await vi.advanceTimersByTimeAsync(0);
+
+    await p.stop();
+    expect(stop).toHaveBeenCalledTimes(1);
+    open();
+    await playing;
+    expect(next.starts).toBe(0);
+    expect(stop).toHaveBeenCalledTimes(1); // not again: the element may belong to the next player
+  });
+
+  it("does not accept a route that delivers after the stop", async () => {
+    const opening = route();
+    let open: () => void = () => undefined;
+    opening.gate = new Promise<void>((r) => (open = r));
+    const p = playerWith([opening]);
+    const seen: string[] = [];
+    p.on("playing", () => seen.push("playing"));
+    const playing = p.play("s1", videoEl());
+    await vi.advanceTimersByTimeAsync(0);
+    await p.stop();
+    open();
+    await playing;
+    expect(seen).toEqual([]);
+    expect((p as unknown as { transport: unknown }).transport).toBeNull();
+  });
+});
+
+describe("stop() order", () => {
+  it("tears the route down before the telemetry flush, which is a network request", async () => {
+    const r = route();
+    const order: string[] = [];
+    r.stop = async () => void order.push("route");
+    const p = playerWith([r]);
+    await p.play("s1", videoEl());
+    (p as unknown as { reporter: { stop(): Promise<void> } }).reporter = { stop: async () => void order.push("telemetry") };
+    await p.stop();
+    expect(order).toEqual(["route", "telemetry"]);
+  });
+});
+
+describe("stop() around play(), audit follow-ups", () => {
+  it("a stop while play() waits for the element's previous player opens nothing", async () => {
+    const video = videoEl();
+    const first = route();
+    const p1 = playerWith([first]);
+    await p1.play("s1", video);
+    let release: () => void = () => undefined;
+    first.stop = () => new Promise<void>((r) => (release = () => r()));
+    const second = route();
+    const p2 = playerWith([second]);
+    const playing = p2.play("s1", video);
+    await vi.advanceTimersByTimeAsync(0);
+    await p2.stop();
+    release();
+    await playing;
+    expect(second.starts).toBe(0);
+  });
+
+  it("play() right after a stop() during recovery plays, instead of being refused as still recovering", async () => {
+    const r = route();
+    const p = playerWith([r]);
+    await p.play("s1", videoEl());
+    r.fireEnded(); // recovery sleeps in its backoff
+    await p.stop();
+    await p.play("s1", videoEl());
+    expect(r.starts).toBe(2);
+  });
+
+  it("play() settles as soon as stop() lands during the first-frame wait, not 8s later", async () => {
+    const r = route();
+    r.start = async () => {
+      r.starts += 1; // opens, but no picture yet
+    };
+    const p = playerWith([r]);
+    let settled = false;
+    const playing = p.play("s1", videoEl()).finally(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(0);
+    await p.stop();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(settled).toBe(true);
+    await playing;
+  });
+});
+
+describe("an old recovery after stop() + play()", () => {
+  it("stopped while the recovery was opening a route: the new session keeps playing", async () => {
+    const r = route();
+    const p = playerWith([r]);
+    await p.play("s1", videoEl());
+    let open: () => void = () => undefined;
+    r.gate = new Promise<void>((g) => (open = g));
+    r.fireEnded();
+    await vi.advanceTimersByTimeAsync(1_500); // recovery is inside the gated start()
+    await p.stop();
+    r.gate = null;
+    await p.play("s1", videoEl());
+    expect(r.running).toBe(true);
+    open(); // the old start() settles now
+    await vi.advanceTimersByTimeAsync(100);
+    expect(r.running).toBe(true);
+    expect((p as unknown as { transport: unknown }).transport).not.toBeNull();
+  });
+
+  it("stopped while the recovery was releasing the dead route: the new session keeps playing", async () => {
+    const r = route();
+    const p = playerWith([r]);
+    await p.play("s1", videoEl());
+    const plainStop = r.stop.bind(r);
+    let release: () => void = () => undefined;
+    r.stop = () => {
+      r.stop = plainStop; // only the recovery's release is slow
+      return new Promise<void>((done) => (release = () => void plainStop().then(done)));
+    };
+    r.fireEnded();
+    await vi.advanceTimersByTimeAsync(1_500); // recovery is inside releaseRoute()
+    await p.stop();
+    await p.play("s1", videoEl());
+    const starts = r.starts;
+    release();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(r.starts).toBe(starts); // the old recovery opened nothing more
+    expect((p as unknown as { transport: unknown }).transport).not.toBeNull();
+  });
+});
+
+describe("play() right after an un-awaited stop()", () => {
+  it("is not torn down by that stop's late teardown", async () => {
+    const r = route();
+    const start = r.start.bind(r);
+    const stop = r.stop.bind(r);
+    let stops = 0;
+    r.stop = async () => {
+      stops += 1;
+      return stop();
+    };
+    // Like a real transport: start() claims its fields at once, then yields, and
+    // a stop() in between leaves it with nothing attached.
+    r.start = async (id, video) => {
+      const at = stops;
+      await Promise.resolve();
+      if (stops !== at) return;
+      return start(id, video);
+    };
+    const p = playerWith([r]);
+    await p.play("s1", videoEl());
+    void p.stop();
+    const playing = p.play("s1", videoEl());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.running).toBe(true);
+    await vi.advanceTimersByTimeAsync(9_000);
+    await playing.catch(() => undefined);
   });
 });

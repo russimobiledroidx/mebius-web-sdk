@@ -42959,6 +42959,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await waitForIceGathering(pc);
+      if (this.pc !== pc) return;
       const localSdp = (_a = pc.localDescription) == null ? void 0 : _a.sdp;
       if (!localSdp) throw mebiusError("CONNECTION_FAILED", "Failed to create a local session.");
       const { answer, resourceUrl } = await this.signaling.exchangeSession(
@@ -42966,18 +42967,22 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         streamId,
         localSdp
       );
+      if (this.pc !== pc) {
+        void this.signaling.deleteResource(resourceUrl).catch(() => void 0);
+        return;
+      }
       this.resourceUrl = resourceUrl;
       await pc.setRemoteDescription({ type: "answer", sdp: answer });
     }
     async stop() {
-      var _a;
       this.cursor = null;
-      await this.signaling.deleteResource(this.resourceUrl);
-      this.resourceUrl = null;
-      (_a = this.pc) == null ? void 0 : _a.close();
+      const { pc, resourceUrl, video } = this;
       this.pc = null;
-      if (this.video) resetVideoElement(this.video);
+      this.resourceUrl = null;
       this.video = null;
+      pc == null ? void 0 : pc.close();
+      if (video) resetVideoElement(video);
+      await this.signaling.deleteResource(resourceUrl);
     }
     /**
      * Read what the connection actually did since the last reading.
@@ -43158,6 +43163,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       } catch (e) {
         Hls2 = null;
       }
+      if (signal.aborted) return;
       if (!(Hls2 == null ? void 0 : Hls2.isSupported())) {
         if (!video.canPlayType("application/vnd.apple.mpegurl")) {
           throw mebiusError("CONNECTION_FAILED", "Scale playback is not supported in this browser.");
@@ -43510,6 +43516,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       } catch (cause) {
         throw mebiusError("CONNECTION_FAILED", "Balanced playback support failed to load.", cause);
       }
+      if (signal.aborted) return;
       const flvjs = mod.default;
       if (!flvjs.isSupported()) {
         throw mebiusError("CONNECTION_FAILED", "Balanced playback is not supported in this browser.");
@@ -43520,6 +43527,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       const firstPlay = playWithAutoplayFallback(video);
       firstPlay.catch(() => void 0);
       if (await stalledWithData(video, AUDIO_RETRY_MS)) {
+        if (signal.aborted) return;
         this.teardownPlayer();
         this.withAudio = false;
         this.attachPlayer(flvjs, video, this.rungUrl(), false);
@@ -43780,7 +43788,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
 
   // src/internal/telemetry.ts
-  var SDK_VERSION = true ? `web/${"0.10.1"}` : "web/dev";
+  var SDK_VERSION = true ? `web/${"0.10.2"}` : "web/dev";
   var FLUSH_INTERVAL_MS = 15e3;
   var MAX_BATCH = 64;
   function describeDevice() {
@@ -44238,6 +44246,15 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
        */
       this.session = 0;
       /**
+       * The route openRoute() is trying right now, before it has a picture. stop()
+       * tears it down too: it is not `transport` yet, and without this a viewer who
+       * leaves during the first seconds left it downloading into an element the app
+       * had already cleared.
+       */
+      this.opening = null;
+      /** Cuts openRoute()'s first-frame wait short when stop() lands. */
+      this.openAbort = null;
+      /**
        * The viewer's quality choices, shared by reference with every candidate
        * route — which is what carries them across a failover or a recovery reopen.
        */
@@ -44250,13 +44267,20 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         this.prefs
       );
     }
-    /** Start playing `streamId` into the given video element or selector. */
+    /**
+     * Start playing `streamId` into the given video element or selector.
+     *
+     * A stop() while this is pending makes it resolve without playing; check the
+     * `playing` event, not the resolution, for "the picture is up".
+     */
     async play(streamId, viewTarget) {
       var _a;
       if (this.playing || this.recovering) return;
       const video = resolveVideoElement(viewTarget);
+      const session = this.session;
       const previous = ELEMENT_OWNER.get(video);
       if (previous && previous !== this) await previous.stop();
+      if (this.session !== session) return;
       ELEMENT_OWNER.set(video, this);
       this.video = video;
       this.elementListeners = new AbortController();
@@ -44273,7 +44297,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         { signal: this.elementListeners.signal }
       );
       this.streamId = streamId;
-      const failure = await this.openRoute(streamId, video);
+      const failure = await this.openRoute(streamId, video, session);
       if (failure === null) return;
       (_a = this.elementListeners) == null ? void 0 : _a.abort();
       this.elementListeners = null;
@@ -44293,15 +44317,20 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      * Returns `null` when a route was accepted, or the error to report when none
      * of them produced a picture.
      */
-    async openRoute(streamId, video) {
+    async openRoute(streamId, video, session = this.session) {
       const startedAtMs = Date.now();
+      const abort = new AbortController();
+      this.openAbort = abort;
       let lastError = null;
       for (const candidate of this.candidates) {
+        if (this.session !== session) return null;
         try {
           resetVideoElement(video);
           this.attach(candidate);
+          this.opening = candidate;
           await candidate.start(streamId, video);
-          if (await hasFirstFrame(video)) {
+          if (this.session === session && await hasFirstFrame(video, abort.signal) && this.session === session) {
+            this.opening = null;
             this.transport = candidate;
             this.playing = true;
             this.publishQualities();
@@ -44326,13 +44355,16 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         } catch (cause) {
           lastError = cause;
         }
+        if (this.session !== session) return null;
+        this.opening = null;
         await candidate.stop().catch(() => void 0);
       }
+      if (this.session !== session) return null;
       return lastError != null ? lastError : mebiusError("CONNECTION_FAILED", "No Mebius route could play this stream.");
     }
     /** Stop playback and detach from the video element. */
     async stop() {
-      var _a, _b, _c;
+      var _a, _b;
       this.session += 1;
       this.recoveryAttempts = 0;
       this.clearStallTimer();
@@ -44344,12 +44376,22 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.stalled = false;
       this.freeze.reset();
       this.stopStats();
-      await ((_b = this.reporter) == null ? void 0 : _b.stop());
-      this.reporter = null;
-      await ((_c = this.transport) == null ? void 0 : _c.stop());
+      this.recovering = false;
+      (_b = this.openAbort) == null ? void 0 : _b.abort();
+      this.openAbort = null;
+      const opening = this.opening;
+      this.opening = null;
+      const transport = this.transport;
       this.transport = null;
       this.video = null;
       this.playing = false;
+      try {
+        await Promise.all([opening == null ? void 0 : opening.stop().catch(() => void 0), transport == null ? void 0 : transport.stop()]);
+      } finally {
+        const reporter = this.reporter;
+        this.reporter = null;
+        await (reporter == null ? void 0 : reporter.stop());
+      }
     }
     /**
      * Set output volume in the range 0..1.
@@ -44541,13 +44583,14 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      * fields — which TypeScript reads as "these can only be null now".
      */
     async releaseRoute() {
-      var _a, _b;
       this.stopStats();
-      await ((_a = this.reporter) == null ? void 0 : _a.stop());
-      this.reporter = null;
-      await ((_b = this.transport) == null ? void 0 : _b.stop().catch(() => void 0));
+      const transport = this.transport;
+      const reporter = this.reporter;
       this.transport = null;
+      this.reporter = null;
       this.playing = false;
+      await (transport == null ? void 0 : transport.stop().catch(() => void 0));
+      await (reporter == null ? void 0 : reporter.stop());
     }
     clearStallTimer() {
       if (this.stallTimer) clearTimeout(this.stallTimer);
@@ -44595,11 +44638,9 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
           await new Promise((r) => setTimeout(r, wait));
           if (this.session !== session) return;
           await this.releaseRoute();
-          const failure = await this.openRoute(streamId, video);
-          if (this.session !== session) {
-            await this.releaseRoute();
-            return;
-          }
+          if (this.session !== session) return;
+          const failure = await this.openRoute(streamId, video, session);
+          if (this.session !== session) return;
           if (failure === null) return;
         }
         if (this.session !== session) return;
@@ -44610,7 +44651,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         this.streamId = null;
         this.emit("ended", void 0);
       } finally {
-        this.recovering = false;
+        if (this.session === session) this.recovering = false;
       }
     }
     startStats() {
@@ -44640,19 +44681,23 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.statsTimer = null;
     }
   };
-  function hasFirstFrame(video) {
+  function hasFirstFrame(video, signal) {
+    if (signal == null ? void 0 : signal.aborted) return Promise.resolve(false);
     if (video.currentTime > 0 && !video.paused) return Promise.resolve(true);
     return new Promise((resolve) => {
       const done = (ok) => {
         clearTimeout(timer);
         video.removeEventListener("timeupdate", onTime);
+        signal == null ? void 0 : signal.removeEventListener("abort", onAbort);
         resolve(ok);
       };
       const onTime = () => {
         if (video.currentTime > 0) done(true);
       };
+      const onAbort = () => done(false);
       const timer = setTimeout(() => done(false), FIRST_FRAME_TIMEOUT_MS);
       video.addEventListener("timeupdate", onTime);
+      signal == null ? void 0 : signal.addEventListener("abort", onAbort);
     });
   }
 

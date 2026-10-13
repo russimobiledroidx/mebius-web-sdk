@@ -225,6 +225,8 @@ export class HlsViewTransport implements ViewTransport {
       // is exactly the browser where it works.
       Hls = null;
     }
+    // stop() landed during the import: attaching now would outlive it.
+    if (signal.aborted) return;
 
     if (!Hls?.isSupported()) {
       if (!video.canPlayType("application/vnd.apple.mpegurl")) {

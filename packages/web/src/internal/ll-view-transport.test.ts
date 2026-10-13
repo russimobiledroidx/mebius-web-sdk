@@ -112,3 +112,45 @@ describe("WhepViewTransport.getStats", () => {
     expect(stats?.packetLossPct).toBe(0);
   });
 });
+
+describe("WhepViewTransport stopped during start()", () => {
+  it("deletes the server session the exchange created after the stop, instead of leaving it to time out", async () => {
+    class FakePc {
+      iceGatheringState = "complete";
+      localDescription = { sdp: "offer" };
+      addTransceiver() {}
+      async createOffer() {
+        return { type: "offer", sdp: "offer" };
+      }
+      async setLocalDescription() {}
+      async setRemoteDescription() {
+        throw new Error("closed");
+      }
+      close() {}
+    }
+    const g = globalThis as Record<string, unknown>;
+    const saved = { pc: g.RTCPeerConnection, ms: g.MediaStream };
+    g.RTCPeerConnection = FakePc;
+    g.MediaStream = class {};
+    try {
+      let answer: (v: { answer: string; resourceUrl: string }) => void = () => undefined;
+      const deleted: (string | null)[] = [];
+      const signaling = {
+        exchangeSession: () => new Promise((r) => (answer = r)),
+        deleteResource: async (u: string | null) => void deleted.push(u),
+      } as unknown as SignalingClient;
+      const t = new WhepViewTransport(signaling);
+      const video = { srcObject: null, removeAttribute() {}, load() {} } as unknown as HTMLVideoElement;
+      const starting = t.start("s1", video);
+      await new Promise((r) => setTimeout(r, 0)); // into the exchange
+      await t.stop();
+      answer({ answer: "answer", resourceUrl: "https://gw.test/session/1" });
+      await starting; // resolves quietly: nothing to attach to
+      await new Promise((r) => setTimeout(r, 0));
+      expect(deleted).toEqual([null, "https://gw.test/session/1"]);
+    } finally {
+      g.RTCPeerConnection = saved.pc;
+      g.MediaStream = saved.ms;
+    }
+  });
+});

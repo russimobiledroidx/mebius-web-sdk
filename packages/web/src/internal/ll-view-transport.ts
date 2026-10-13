@@ -129,6 +129,9 @@ export class WhepViewTransport implements ViewTransport {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     await waitForIceGathering(pc);
+    // stop() (or a newer start) closed this connection meanwhile: posting its
+    // offer would create a server session for a viewer who left.
+    if (this.pc !== pc) return;
 
     const localSdp = pc.localDescription?.sdp;
     if (!localSdp) throw mebiusError("CONNECTION_FAILED", "Failed to create a local session.");
@@ -138,6 +141,11 @@ export class WhepViewTransport implements ViewTransport {
       streamId,
       localSdp,
     );
+    if (this.pc !== pc) {
+      // Stopped during the exchange: stop() had no resource to delete yet.
+      void this.signaling.deleteResource(resourceUrl).catch(() => undefined);
+      return;
+    }
     this.resourceUrl = resourceUrl;
     await pc.setRemoteDescription({ type: "answer", sdp: answer });
   }
@@ -147,15 +155,18 @@ export class WhepViewTransport implements ViewTransport {
     // would otherwise be differenced against a dead one and report its whole
     // history as a single enormous spike.
     this.cursor = null;
-    await this.signaling.deleteResource(this.resourceUrl);
-    this.resourceUrl = null;
-    this.pc?.close();
+    // Taken before the await: a start() beginning during the DELETE owns the
+    // fields by then, and this stop must not close or forget its session.
+    const { pc, resourceUrl, video } = this;
     this.pc = null;
+    this.resourceUrl = null;
+    this.video = null;
+    pc?.close();
     // Release the element's MediaStream. While srcObject is set the element
     // ignores `src`, so leaving it behind stops the next route (HLS/FLV) from
     // ever rendering — a black picture with a perfectly healthy playlist.
-    if (this.video) resetVideoElement(this.video);
-    this.video = null;
+    if (video) resetVideoElement(video);
+    await this.signaling.deleteResource(resourceUrl);
   }
 
   /** True when playback only started because the element had to be muted. */

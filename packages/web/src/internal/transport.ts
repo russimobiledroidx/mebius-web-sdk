@@ -45,6 +45,12 @@ export interface ViewTransport {
   readonly kind: ViewTransportKind;
   /** Which delivery route this transport serves. Set by the candidate factory. */
   route?: PlaybackRoute;
+  /**
+   * stop() may land while start() is still pending (the viewer left during the
+   * first seconds). start() must then leave nothing attached or downloading:
+   * the player does not call stop() a second time, because by then the element
+   * may belong to the app's next player.
+   */
   start(streamId: string, video: HTMLVideoElement): Promise<void>;
   stop(): Promise<void>;
   getStats(): Promise<PlaybackStats | null>;
