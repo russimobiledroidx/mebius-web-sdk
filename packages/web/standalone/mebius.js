@@ -42726,6 +42726,11 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   var DEFAULT_RTC_CONFIG = {
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
   };
+  function rtcConfig(extra) {
+    var _a;
+    if (!(extra == null ? void 0 : extra.length)) return DEFAULT_RTC_CONFIG;
+    return { iceServers: [...(_a = DEFAULT_RTC_CONFIG.iceServers) != null ? _a : [], ...extra] };
+  }
 
   // src/internal/publish-transport.ts
   function preferH264(pc) {
@@ -42745,9 +42750,10 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
   var DEFAULT_MAX_BITRATE_KBPS = 2500;
   var WhipPublishTransport = class {
-    constructor(signaling, maxBitrateKbps = DEFAULT_MAX_BITRATE_KBPS) {
+    constructor(signaling, maxBitrateKbps = DEFAULT_MAX_BITRATE_KBPS, iceServers) {
       this.signaling = signaling;
       this.maxBitrateKbps = maxBitrateKbps;
+      this.iceServers = iceServers;
       this.pc = null;
       this.resourceUrl = null;
       /** Bytes sent and packet counters at the previous getStats() call. */
@@ -42782,7 +42788,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
     async start(streamId, stream) {
       var _a;
-      const pc = new RTCPeerConnection(DEFAULT_RTC_CONFIG);
+      const pc = new RTCPeerConnection(rtcConfig(this.iceServers));
       this.pc = pc;
       for (const track of stream.getTracks()) {
         pc.addTrack(track, stream);
@@ -42912,9 +42918,10 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
   }
   var WhepViewTransport = class {
-    constructor(signaling, targetLatencyMs = DEFAULT_REALTIME_TARGET_MS) {
+    constructor(signaling, targetLatencyMs = DEFAULT_REALTIME_TARGET_MS, iceServers) {
       this.signaling = signaling;
       this.targetLatencyMs = targetLatencyMs;
+      this.iceServers = iceServers;
       this.kind = "whep";
       this.cursor = null;
       this.pc = null;
@@ -42926,6 +42933,11 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       /** True when playback only started because the element had to be muted. */
       this.mutedByPolicy = false;
     }
+    /** The connection's state, or `"closed"` once there is none. */
+    get connectionState() {
+      var _a, _b;
+      return (_b = (_a = this.pc) == null ? void 0 : _a.connectionState) != null ? _b : "closed";
+    }
     onEnded(cb) {
       this.endedCb = cb;
     }
@@ -42933,9 +42945,9 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.bufferingCb = cb;
     }
     async start(streamId, video) {
-      var _a;
+      var _a, _b, _c, _d;
       this.video = video;
-      const pc = new RTCPeerConnection(DEFAULT_RTC_CONFIG);
+      const pc = new RTCPeerConnection(rtcConfig(this.iceServers));
       this.pc = pc;
       const remote = new MediaStream();
       pc.addTransceiver("video", { direction: "recvonly" });
@@ -42950,11 +42962,11 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         });
       };
       pc.onconnectionstatechange = () => {
-        var _a2, _b;
+        var _a2, _b2;
         if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
           (_a2 = this.bufferingCb) == null ? void 0 : _a2.call(this);
         }
-        if (pc.connectionState === "closed") (_b = this.endedCb) == null ? void 0 : _b.call(this);
+        if (pc.connectionState === "closed") (_b2 = this.endedCb) == null ? void 0 : _b2.call(this);
       };
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
@@ -42973,6 +42985,11 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       }
       this.resourceUrl = resourceUrl;
       await pc.setRemoteDescription({ type: "answer", sdp: answer });
+      const dtls = (_c = (_b = pc.getReceivers) == null ? void 0 : _b.call(pc)[0]) == null ? void 0 : _c.transport;
+      (_d = dtls == null ? void 0 : dtls.addEventListener) == null ? void 0 : _d.call(dtls, "statechange", () => {
+        var _a2;
+        if (this.pc === pc && (dtls.state === "closed" || dtls.state === "failed")) (_a2 = this.bufferingCb) == null ? void 0 : _a2.call(this);
+      });
     }
     async stop() {
       this.cursor = null;
@@ -43739,8 +43756,8 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   function isMissingRung(status2) {
     return status2 === 403 || status2 === 404;
   }
-  function createPublishTransport(signaling, maxBitrateKbps) {
-    return new WhipPublishTransport(signaling, maxBitrateKbps);
+  function createPublishTransport(signaling, maxBitrateKbps, iceServers) {
+    return new WhipPublishTransport(signaling, maxBitrateKbps, iceServers);
   }
   var KIND_FAST = "fast";
   var KIND_WIDE = "wide";
@@ -43788,7 +43805,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   }
 
   // src/internal/telemetry.ts
-  var SDK_VERSION = true ? `web/${"0.10.2"}` : "web/dev";
+  var SDK_VERSION = true ? `web/${"0.11.0"}` : "web/dev";
   var FLUSH_INTERVAL_MS = 15e3;
   var MAX_BATCH = 64;
   function describeDevice() {
@@ -43881,7 +43898,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
   };
   var MebiusBroadcaster = class extends TypedEmitter {
     /** @internal */
-    constructor(signaling, options, telemetry = null, userId) {
+    constructor(signaling, options, telemetry = null, userId, iceServers) {
       super();
       this.options = options;
       this.telemetry = telemetry;
@@ -43891,7 +43908,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       this.statsTimer = null;
       this.started = false;
       this.reporter = null;
-      this.transport = createPublishTransport(signaling, options.maxBitrateKbps);
+      this.transport = createPublishTransport(signaling, options.maxBitrateKbps, iceServers);
     }
     /** Begin broadcasting under the given stream id. */
     async start(streamId) {
@@ -43921,7 +43938,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     /** Flip between front and back camera (where available). */
     async switchCamera() {
       var _a;
-      if (!this.stream) return;
+      if (!this.stream || this.options.source) return;
       this.facingMode = this.facingMode === "user" ? "environment" : "user";
       const next = await navigator.mediaDevices.getUserMedia({
         video: __spreadProps(__spreadValues({}, this.switchBase()), { facingMode: this.facingMode }),
@@ -43973,6 +43990,7 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       return typeof this.options.video === "object" ? this.options.video : DEFAULT_VIDEO_CAPTURE;
     }
     async capture() {
+      if (this.options.source) return this.options.source.clone();
       const video = normalize(this.options.video, this.ladderSource ? DEFAULT_VIDEO_CAPTURE : true);
       const audio = normalize(this.options.audio, true);
       try {
@@ -44787,7 +44805,9 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
      * Mebius-flavored code on failure — never the raw protocol name.
      */
     async exchangeSession(kind, streamId, offer) {
-      const url = this.withToken(`${this.base()}/${this.pathFor(kind)}/${encodeURIComponent(streamId)}`);
+      const url = this.withToken(
+        `${this.base()}/${this.pathFor(kind)}/${encodeURIComponent(streamId)}`
+      );
       let res;
       try {
         res = await fetch(url, {
@@ -44805,7 +44825,9 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
         throw mebiusError("STREAM_NOT_FOUND");
       }
       if (!res.ok) {
-        throw mebiusError("CONNECTION_FAILED", `Mebius gateway returned ${res.status}.`);
+        throw mebiusError("CONNECTION_FAILED", `Mebius gateway returned ${res.status}.`, {
+          status: res.status
+        });
       }
       const answer = await res.text();
       const location2 = res.headers.get("Location");
@@ -44999,8 +45021,645 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
     }
   };
 
+  // src/internal/screen.ts
+  var MAX_INPUT_BATCH = 64;
+  var MIN_INPUT_INTERVAL_MS = 20;
+  var RATE_LIMIT_RETRIES = 3;
+  var RATE_LIMIT_DELAY_MS = 250;
+  var MAX_WHEEL_DELTA = 1e4;
+  function screenPoint(box, videoWidth, videoHeight, objectFit, clientX, clientY) {
+    if (!videoWidth || !videoHeight || !box.width || !box.height) return null;
+    const sx = box.width / videoWidth;
+    const sy = box.height / videoHeight;
+    let w = box.width;
+    let h = box.height;
+    if (objectFit !== "fill") {
+      const contain = Math.min(sx, sy);
+      const scale = objectFit === "cover" ? Math.max(sx, sy) : objectFit === "none" ? 1 : objectFit === "scale-down" ? Math.min(1, contain) : contain;
+      w = videoWidth * scale;
+      h = videoHeight * scale;
+    }
+    const rx = (clientX - box.left - (box.width - w) / 2) / w;
+    const ry = (clientY - box.top - (box.height - h) / 2) / h;
+    const x = Math.min(1, Math.max(0, rx));
+    const y = Math.min(1, Math.max(0, ry));
+    return { x, y, inside: x === rx && y === ry };
+  }
+  async function responseError(res) {
+    const body = await res.json().catch(() => null);
+    const message = typeof (body == null ? void 0 : body.message) === "string" && body.message ? body.message : void 0;
+    if (res.status === 401) return mebiusError("TOKEN_EXPIRED", message);
+    if (res.status === 403) return mebiusError("PERMISSION_DENIED", message);
+    if (res.status === 404) return mebiusError("STREAM_NOT_FOUND", message);
+    return mebiusError("CONNECTION_FAILED", message != null ? message : `Mebius returned ${res.status}.`);
+  }
+  var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  function nextFrame(cb) {
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(cb);
+    else setTimeout(cb, 16);
+  }
+  var InputSender = class {
+    constructor(url, token, refresh, onError, schedule = nextFrame) {
+      this.url = url;
+      this.token = token;
+      this.refresh = refresh;
+      this.onError = onError;
+      this.schedule = schedule;
+      this.queue = [];
+      this.scheduled = false;
+      this.sending = false;
+      this.lastSentAt = 0;
+      /** Set once a failure was reported, until a request succeeds: one report per outage. */
+      this.failing = false;
+    }
+    push(ev) {
+      const last = this.queue[this.queue.length - 1];
+      if (ev.type === "move" && (last == null ? void 0 : last.type) === "move") this.queue[this.queue.length - 1] = ev;
+      else this.queue.push(ev);
+      if (this.scheduled || this.sending) return;
+      this.scheduled = true;
+      this.schedule(() => {
+        this.scheduled = false;
+        void this.drain();
+      });
+    }
+    async drain() {
+      this.sending = true;
+      try {
+        while (this.queue.length > 0) {
+          const wait = this.lastSentAt + MIN_INPUT_INTERVAL_MS - Date.now();
+          if (wait > 0) await sleep(wait);
+          await this.send(this.queue.splice(0, MAX_INPUT_BATCH));
+        }
+      } finally {
+        this.sending = false;
+      }
+    }
+    async send(events, attempt = 0, refreshed = false) {
+      this.lastSentAt = Date.now();
+      let res;
+      try {
+        res = await fetch(this.url, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${this.token()}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ events })
+        });
+      } catch (cause) {
+        this.fail(mebiusError("CONNECTION_FAILED", void 0, cause));
+        return;
+      }
+      if (res.ok) {
+        this.failing = false;
+        return;
+      }
+      if (res.status === 401 && !refreshed && await this.refresh())
+        return this.send(events, attempt, true);
+      if (res.status === 429 && attempt < RATE_LIMIT_RETRIES) {
+        await sleep(RATE_LIMIT_DELAY_MS * (attempt + 1));
+        return this.send(events, attempt + 1, refreshed);
+      }
+      this.fail(await responseError(res));
+    }
+    fail(e) {
+      if (!this.failing) this.onError(e);
+      this.failing = true;
+    }
+  };
+  function sseParser(onData) {
+    let buffer = "";
+    let data = [];
+    return (chunk) => {
+      buffer += chunk;
+      let nl;
+      while ((nl = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, nl).replace(/\r$/, "");
+        buffer = buffer.slice(nl + 1);
+        if (line === "") {
+          if (data.length > 0) onData(data.join("\n"));
+          data = [];
+        } else if (line.startsWith("data:")) {
+          data.push(line.slice(line.startsWith("data: ") ? 6 : 5));
+        }
+      }
+    };
+  }
+  function reconnectDelayMs(attempt, random = Math.random) {
+    const base = Math.min(3e4, 1e3 * 2 ** attempt);
+    return base + random() * base * 0.2;
+  }
+
+  // src/screen-share.ts
+  function isCredentials(v) {
+    const c = v;
+    return typeof (c == null ? void 0 : c.deviceId) === "string" && !!c.deviceId && typeof c.deviceSecret === "string" && !!c.deviceSecret;
+  }
+  function localCredentials(gateway) {
+    const key = `mebius.screen.device:${gateway.replace(/\/+$/, "")}`;
+    return {
+      load() {
+        var _a;
+        try {
+          const parsed = JSON.parse((_a = localStorage.getItem(key)) != null ? _a : "null");
+          return isCredentials(parsed) ? parsed : null;
+        } catch (e) {
+          return null;
+        }
+      },
+      save(credentials) {
+        try {
+          localStorage.setItem(key, JSON.stringify(credentials));
+        } catch (e) {
+        }
+      },
+      clear() {
+        try {
+          localStorage.removeItem(key);
+        } catch (e) {
+        }
+      }
+    };
+  }
+  var MebiusScreenShare = class extends TypedEmitter {
+    /** @internal */
+    constructor(gateway, options = {}) {
+      var _a;
+      super();
+      this.gateway = gateway;
+      this.source = null;
+      this.abort = null;
+      this.session = null;
+      /** Events are handled one after another, so a stop never overtakes its start. */
+      this.queue = Promise.resolve();
+      /** The start() in progress, so a second click joins it instead of opening a second picker. */
+      this.starting = null;
+      /** Bumped by stop(), so a start() still in the picker knows to back out. */
+      this.generation = 0;
+      this.credentials = (_a = options.credentials) != null ? _a : localCredentials(gateway);
+    }
+    url(path) {
+      return `${this.gateway.replace(/\/+$/, "")}/api/v1/screen/agent/${path}`;
+    }
+    /**
+     * Enroll this browser with a one-time code from your backend, unless it
+     * already is. A code is single-use and valid for an hour.
+     */
+    async enrollIfNeeded(code, device = {}) {
+      var _a, _b;
+      if (await this.credentials.load()) return;
+      let res;
+      try {
+        res = await fetch(this.url("enroll"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            enrollToken: code,
+            name: (_a = device.name) != null ? _a : "browser",
+            os: (_b = device.os) != null ? _b : "web"
+          })
+        });
+      } catch (cause) {
+        throw mebiusError("CONNECTION_FAILED", void 0, cause);
+      }
+      if (!res.ok) throw await responseError(res);
+      const body = await res.json().catch(() => null);
+      if (!isCredentials(body))
+        throw mebiusError("CONNECTION_FAILED", "Mebius returned no device credentials.");
+      await this.credentials.save({ deviceId: body.deviceId, deviceSecret: body.deviceSecret });
+    }
+    /**
+     * Ask the user which screen to share, then put this device online. Call it
+     * straight from a click handler: the browser only shows its picker in
+     * response to a user gesture.
+     */
+    start() {
+      if (this.source) return Promise.resolve();
+      if (!this.starting) {
+        const p = this.open();
+        this.starting = p;
+        void p.catch(() => void 0).finally(() => this.starting = null);
+      }
+      return this.starting;
+    }
+    async open() {
+      const generation = this.generation;
+      let source;
+      try {
+        source = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      } catch (cause) {
+        throw mebiusError("PERMISSION_DENIED", "Screen sharing was not allowed.", cause);
+      }
+      const credentials = await this.credentials.load();
+      if (generation !== this.generation) {
+        source.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      if (!credentials) {
+        source.getTracks().forEach((t) => t.stop());
+        throw mebiusError("UNKNOWN", "This browser is not enrolled. Call enrollIfNeeded() first.");
+      }
+      for (const track of source.getVideoTracks()) {
+        track.contentHint = "detail";
+        track.addEventListener("ended", () => void this.stop());
+      }
+      this.source = source;
+      this.abort = new AbortController();
+      void this.listen(credentials.deviceSecret, this.abort.signal);
+    }
+    /** Stop sharing and take this device offline. */
+    async stop() {
+      var _a;
+      this.generation++;
+      if (!this.source) return;
+      const source = this.source;
+      this.source = null;
+      source.getTracks().forEach((t) => t.stop());
+      (_a = this.abort) == null ? void 0 : _a.abort();
+      this.abort = null;
+      await this.endSession();
+      this.emit("stopped", void 0);
+    }
+    /** Hold the event stream open, reconnecting with backoff, until aborted. */
+    async listen(secret, signal) {
+      let failures = 0;
+      while (!signal.aborted) {
+        try {
+          const res = await fetch(this.url("events"), {
+            headers: { Authorization: `Bearer ${secret}`, Accept: "text/event-stream" },
+            cache: "no-store",
+            signal
+          });
+          if (res.status === 401 || res.status === 403) {
+            if (res.status === 401) await this.credentials.clear();
+            this.emit("error", await responseError(res));
+            void this.stop();
+            return;
+          }
+          if (!res.ok || !res.body) throw await responseError(res);
+          failures = 0;
+          const feed = sseParser((data) => this.dispatch(data));
+          const decoder = new TextDecoder();
+          const reader = res.body.getReader();
+          for (; ; ) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            feed(decoder.decode(value, { stream: true }));
+          }
+        } catch (e) {
+          if (signal.aborted) return;
+          if (e instanceof MebiusError && failures === 0) this.emit("error", e);
+        }
+        this.enqueue(() => this.endSession());
+        await new Promise((r) => setTimeout(r, reconnectDelayMs(failures++)));
+      }
+    }
+    dispatch(data) {
+      let ev;
+      try {
+        ev = JSON.parse(data);
+      } catch (e) {
+        return;
+      }
+      if (typeof ev !== "object" || ev === null || typeof ev.type !== "string") return;
+      this.enqueue(() => this.handle(ev));
+    }
+    /** Chain `fn` behind earlier events. A link that throws is reported and never blocks the next. */
+    enqueue(fn) {
+      this.queue = this.queue.then(fn).catch((e) => {
+        this.emit("error", e instanceof MebiusError ? e : mebiusError("UNKNOWN", void 0, e));
+      });
+    }
+    async handle(ev) {
+      var _a, _b, _c;
+      if (ev.type === "session.stop") {
+        if (((_a = this.session) == null ? void 0 : _a.id) === ev.sessionId) await this.endSession();
+        return;
+      }
+      if (ev.type !== "session.start" || typeof ev.sessionId !== "string" || typeof ev.publishToken !== "string")
+        return;
+      await this.endSession();
+      if (!this.source) return;
+      this.emit("viewing", { sessionId: ev.sessionId, mode: ev.mode, userId: (_b = ev.userId) != null ? _b : "" });
+      const broadcaster = new MebiusBroadcaster(
+        new SignalingClient(this.gateway, ev.publishToken),
+        { source: this.source, maxBitrateKbps: ev.maxBitrateKbps },
+        null,
+        void 0,
+        ev.iceServers
+      );
+      this.session = { id: ev.sessionId, broadcaster };
+      try {
+        await broadcaster.start(ev.sessionId);
+      } catch (e) {
+        if (((_c = this.session) == null ? void 0 : _c.broadcaster) !== broadcaster) return;
+        this.emit(
+          "error",
+          e instanceof MebiusError ? e : mebiusError("CONNECTION_FAILED", void 0, e)
+        );
+        await this.endSession();
+      }
+    }
+    async endSession() {
+      const session = this.session;
+      if (!session) return;
+      this.session = null;
+      await session.broadcaster.stop().catch(() => void 0);
+      this.emit("ended", { sessionId: session.id });
+    }
+  };
+
+  // src/screen-viewer.ts
+  var WATCH_RETRY_MS = 1e3;
+  var WATCH_BUDGET_MS = 15e3;
+  var DISCONNECT_GRACE_MS = 2e3;
+  var REFRESH_MARGIN_MS2 = 6e4;
+  var MIN_REFRESH_DELAY_MS = 5e3;
+  var BUTTON_BITS = [
+    [1, "left"],
+    [2, "right"],
+    [4, "middle"]
+  ];
+  var WHEEL_UNIT = [1, 40, 800];
+  var sleep2 = (ms) => new Promise((r) => setTimeout(r, ms));
+  var MebiusScreenViewer = class extends TypedEmitter {
+    /** @internal */
+    constructor(gateway) {
+      super();
+      this.gateway = gateway;
+      this.transport = null;
+      this.signaling = null;
+      this.video = null;
+      this.sessionId = "";
+      this.token = "";
+      this.closed = false;
+      this.reconnecting = false;
+      this.graceTimer = null;
+      this.refreshToken = null;
+      this.refreshing = null;
+      this.refreshTimer = null;
+      this.unbind = null;
+    }
+    /**
+     * Show the session's screen in `target`. Resolves once Mebius has accepted
+     * this viewer (the picture follows within moments); rejects if that did not
+     * happen within about 15 seconds, or at once if the token was refused.
+     *
+     * A connection lost later is reopened on its own. If Mebius refuses the
+     * reopen (the session ended), `ended` is emitted and the viewer closes.
+     */
+    async watch(options, target) {
+      if (this.closed) throw mebiusError("NOT_CONNECTED", "This screen viewer was closed.");
+      this.video = resolveVideoElement(target);
+      this.sessionId = options.sessionId;
+      this.token = options.token;
+      this.iceServers = options.iceServers;
+      this.signaling = new SignalingClient(this.gateway, options.token);
+      await this.connect(true);
+    }
+    /**
+     * Open the picture, retrying inside the budget. `initial`: the device may not
+     * be sending yet, so "not found" is retried; once watching, it means the
+     * session is over.
+     */
+    async connect(initial) {
+      var _a;
+      const deadline = Date.now() + WATCH_BUDGET_MS;
+      for (; ; ) {
+        const t = new WhepViewTransport(this.signaling, void 0, this.iceServers);
+        this.transport = t;
+        try {
+          await t.start(this.sessionId, this.video);
+        } catch (e) {
+          await t.stop();
+          if (this.closed) return;
+          const status2 = e instanceof MebiusError ? (_a = e.cause) == null ? void 0 : _a.status : void 0;
+          const refused = !(e instanceof MebiusError) || e.code === "TOKEN_EXPIRED" || status2 === 400 || !initial && e.code === "STREAM_NOT_FOUND";
+          if (refused || Date.now() + WATCH_RETRY_MS > deadline) throw e;
+          await sleep2(WATCH_RETRY_MS);
+          if (this.closed) return;
+          continue;
+        }
+        if (this.closed) return;
+        t.onEnded(() => this.lost(t));
+        t.onBuffering(() => {
+          if (t.connectionState !== "disconnected") return this.lost(t);
+          if (this.graceTimer) return;
+          this.graceTimer = setTimeout(() => {
+            this.graceTimer = null;
+            if (t.connectionState !== "connected") this.lost(t);
+          }, DISCONNECT_GRACE_MS);
+        });
+        return;
+      }
+    }
+    /**
+     * The picture's connection went away. Ask for it again: that tells a network
+     * blip (accepted, watching resumes) from an ended session (refused).
+     */
+    lost(t) {
+      if (this.closed || this.reconnecting || this.transport !== t) return;
+      this.reconnecting = true;
+      void t.stop();
+      this.connect(false).then(
+        () => this.reconnecting = false,
+        () => this.end()
+      );
+    }
+    /**
+     * Send this viewer's mouse, wheel and keyboard to the shared screen. Only a
+     * session created with mode `control` accepts input.
+     *
+     * Keys are captured while the video element has focus (a click on it focuses
+     * it), Tab and Escape included: they go to the shared screen. Click outside
+     * the video to take the keyboard back.
+     */
+    enableControl(options) {
+      const video = this.video;
+      if (!video || this.closed)
+        throw mebiusError("NOT_CONNECTED", "Call watch() before enableControl().");
+      this.disableControl();
+      this.refreshToken = options.refreshToken;
+      this.scheduleRefresh(null);
+      const sender = new InputSender(
+        `${this.gateway.replace(/\/+$/, "")}/api/v1/screen/sessions/${encodeURIComponent(this.sessionId)}/input`,
+        () => this.token,
+        () => this.renewToken(),
+        (e) => {
+          this.emit("error", e);
+          if (e.code === "PERMISSION_DENIED") this.disableControl();
+        }
+      );
+      const keys = /* @__PURE__ */ new Set();
+      const buttons = /* @__PURE__ */ new Set();
+      let last = null;
+      const point = (ev) => screenPoint(
+        video.getBoundingClientRect(),
+        video.videoWidth,
+        video.videoHeight,
+        getComputedStyle(video).objectFit,
+        ev.clientX,
+        ev.clientY
+      );
+      const sync = (ev) => {
+        const p = point(ev);
+        if (p) last = { x: p.x, y: p.y };
+        for (const [bit, button] of BUTTON_BITS) {
+          const down = (ev.buttons & bit) !== 0;
+          if (down && !buttons.has(button) && (p == null ? void 0 : p.inside)) {
+            buttons.add(button);
+            sender.push({ type: "down", x: p.x, y: p.y, button });
+          } else if (!down && buttons.has(button) && last) {
+            buttons.delete(button);
+            sender.push(__spreadProps(__spreadValues({ type: "up" }, last), { button }));
+          }
+        }
+      };
+      const releaseButtons = () => {
+        if (last) for (const button of buttons) sender.push(__spreadProps(__spreadValues({ type: "up" }, last), { button }));
+        buttons.clear();
+      };
+      const onMove = (ev) => {
+        const p = point(ev);
+        if (p) sender.push({ type: "move", x: p.x, y: p.y });
+        sync(ev);
+      };
+      const onDown = (ev) => {
+        var _a;
+        ev.preventDefault();
+        video.focus();
+        (_a = video.setPointerCapture) == null ? void 0 : _a.call(video, ev.pointerId);
+        sync(ev);
+      };
+      const onWheel = (ev) => {
+        var _a;
+        ev.preventDefault();
+        const unit = (_a = WHEEL_UNIT[ev.deltaMode]) != null ? _a : 1;
+        const clamp = (d) => Math.max(-MAX_WHEEL_DELTA, Math.min(MAX_WHEEL_DELTA, Math.round(d * unit)));
+        sender.push({ type: "wheel", dx: clamp(ev.deltaX), dy: clamp(ev.deltaY) });
+      };
+      const releaseKeys = () => {
+        for (const key of keys) sender.push({ type: "keyup", key });
+        keys.clear();
+      };
+      const onKey = (ev) => {
+        if (!ev.code) return;
+        ev.preventDefault();
+        if (ev.type === "keydown") {
+          if (ev.repeat || keys.has(ev.code)) return;
+          keys.add(ev.code);
+          sender.push({ type: "keydown", key: ev.code });
+          return;
+        }
+        if (!keys.delete(ev.code)) return;
+        sender.push({ type: "keyup", key: ev.code });
+        if (ev.code.startsWith("Meta")) releaseKeys();
+      };
+      const noMenu = (ev) => ev.preventDefault();
+      if (video.tabIndex < 0) video.tabIndex = 0;
+      const touchAction = video.style.touchAction;
+      video.style.touchAction = "none";
+      const listeners = [
+        ["pointermove", onMove],
+        ["pointerdown", onDown],
+        ["pointerup", sync],
+        ["pointercancel", releaseButtons],
+        ["wheel", onWheel, { passive: false }],
+        ["keydown", onKey],
+        ["keyup", onKey],
+        ["blur", releaseKeys],
+        ["contextmenu", noMenu]
+      ];
+      for (const [type, fn, opts] of listeners) video.addEventListener(type, fn, opts);
+      this.unbind = () => {
+        releaseButtons();
+        releaseKeys();
+        video.style.touchAction = touchAction;
+        for (const [type, fn] of listeners) video.removeEventListener(type, fn);
+      };
+    }
+    /** Stop sending input, releasing anything still held. Watching continues. */
+    disableControl() {
+      var _a;
+      (_a = this.unbind) == null ? void 0 : _a.call(this);
+      this.unbind = null;
+      this.refreshToken = null;
+      if (this.refreshTimer) clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+    /**
+     * Stop watching and release the video element. The session itself ends on
+     * its own once nobody has watched it for 60 seconds, or when your backend
+     * ends it.
+     */
+    close() {
+      var _a;
+      if (this.closed) return;
+      this.closed = true;
+      this.disableControl();
+      if (this.graceTimer) clearTimeout(this.graceTimer);
+      void ((_a = this.transport) == null ? void 0 : _a.stop());
+      this.transport = null;
+      this.removeAllListeners();
+    }
+    end() {
+      if (this.closed) return;
+      this.emit("ended", void 0);
+      this.close();
+    }
+    /**
+     * Arm the next renewal. `previousExpMs`: the expiry the renewed token
+     * replaced; a token that does not outlive it arms nothing, leaving renewal to
+     * the next rejected request rather than asking again in a loop.
+     */
+    scheduleRefresh(previousExpMs) {
+      if (this.refreshTimer) clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+      const { expiresAtMs } = readToken(this.token);
+      if (expiresAtMs === null || !this.refreshToken) return;
+      if (previousExpMs !== null && expiresAtMs <= previousExpMs) return;
+      this.refreshTimer = setTimeout(
+        () => void this.renewToken(),
+        Math.max(MIN_REFRESH_DELAY_MS, expiresAtMs - Date.now() - REFRESH_MARGIN_MS2)
+      );
+    }
+    /** One refresh at a time, however many requests are waiting on it. */
+    renewToken() {
+      const refresh = this.refreshToken;
+      if (!refresh) return Promise.resolve(false);
+      if (!this.refreshing) {
+        const p = this.fetchToken(refresh);
+        this.refreshing = p;
+        void p.finally(() => {
+          if (this.refreshing === p) this.refreshing = null;
+        });
+      }
+      return this.refreshing;
+    }
+    async fetchToken(refresh) {
+      var _a;
+      try {
+        const next = await refresh();
+        if (this.refreshToken !== refresh) return false;
+        const previous = readToken(this.token).expiresAtMs;
+        this.token = next;
+        (_a = this.signaling) == null ? void 0 : _a.setToken(next);
+        this.scheduleRefresh(previous);
+        return true;
+      } catch (cause) {
+        this.emit(
+          "error",
+          mebiusError("TOKEN_EXPIRED", "Could not refresh the screen session token.", cause)
+        );
+        return false;
+      }
+    }
+  };
+
   // src/mebius.ts
   var config = null;
+  function requireConfig() {
+    if (!config) throw mebiusError("UNKNOWN", "Call Mebius.init() first.");
+    return config;
+  }
   var Mebius = {
     /** Configure the SDK once, before connecting. */
     init(options) {
@@ -45029,6 +45688,21 @@ Schedule: ${scheduleItems.map((seg) => segmentToString(seg))} pos: ${this.timeli
       );
       client.open();
       return client;
+    },
+    /**
+     * Create a viewer for a screen session. Needs only {@link Mebius.init}: the
+     * session's own view token, not a {@link Mebius.connect} token, is what
+     * authorizes it.
+     */
+    createScreenViewer() {
+      return new MebiusScreenViewer(requireConfig().gateway);
+    },
+    /**
+     * Share this browser's screen as an enrolled device. Needs only
+     * {@link Mebius.init}; the device's own credentials authorize it.
+     */
+    createScreenShare(options = {}) {
+      return new MebiusScreenShare(requireConfig().gateway, options);
     },
     /** @internal Reset configuration (used in tests). */
     _reset() {
