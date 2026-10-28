@@ -129,6 +129,13 @@ export interface BroadcasterOptions {
    * `docs/INTEGRATION.md` §3.1 "Encoder profiles").
    */
   maxBitrateKbps?: number;
+  /**
+   * Publish this stream instead of capturing the camera/microphone, e.g. one
+   * from `getDisplayMedia`. `video` and `audio` are then ignored and no
+   * permission prompt is shown. The broadcaster publishes a copy and never
+   * stops your source: stopping it is up to you.
+   */
+  source?: MediaStream;
 }
 
 /**
@@ -310,6 +317,69 @@ export interface CaptionSegment {
   translation?: string;
   /** Always `true`. Render a machine-generated indicator — never as a direct quote. */
   machineGenerated: true;
+}
+
+/** What {@link MebiusScreenViewer.watch} needs, as your backend received it from Mebius. */
+export interface ScreenWatchOptions {
+  /** The screen session id (`scr_…`). */
+  sessionId: string;
+  /** The session's view token. */
+  token: string;
+  /**
+   * Relay servers returned with the token, when Mebius has them. Pass them
+   * through untouched; they let a viewer behind a strict network still connect.
+   */
+  iceServers?: RTCIceServer[];
+}
+
+/** Options for {@link MebiusScreenViewer.enableControl}. */
+export interface ScreenControlOptions {
+  /**
+   * Mint a fresh view token for the same session (your backend calls
+   * `POST /api/v1/screen/sessions/:id/tokens`). View tokens last 10 minutes and
+   * every input request is checked against one, so a control session that
+   * outlives its token needs this. Called ahead of expiry, and once more if
+   * Mebius ever rejects the current token.
+   */
+  refreshToken: () => string | Promise<string>;
+}
+
+/** A device's credentials, as returned by enrollment. Keep `deviceSecret` private. */
+export interface ScreenCredentials {
+  deviceId: string;
+  deviceSecret: string;
+}
+
+/**
+ * Where a screen share keeps its device credentials. The default stores them
+ * in this browser's `localStorage`; supply your own to keep them elsewhere.
+ */
+export interface ScreenCredentialStore {
+  load(): ScreenCredentials | null | Promise<ScreenCredentials | null>;
+  save(credentials: ScreenCredentials): void | Promise<void>;
+  clear(): void | Promise<void>;
+}
+
+/** Options for {@link Mebius.createScreenShare}. */
+export interface ScreenShareOptions {
+  /** Defaults to this browser's `localStorage`. */
+  credentials?: ScreenCredentialStore;
+}
+
+/** How this device is listed after enrollment. */
+export interface ScreenDeviceInfo {
+  /** Defaults to `"browser"`. */
+  name?: string;
+  /** Defaults to `"web"`. */
+  os?: string;
+}
+
+/** A session in which someone is watching (or controlling) this screen. */
+export interface ScreenSessionInfo {
+  sessionId: string;
+  mode: "view" | "control";
+  /** Your backend's id for the admin watching, or `""` if it gave none. */
+  userId: string;
 }
 
 /** Canonical Mebius error codes surfaced to your app. */

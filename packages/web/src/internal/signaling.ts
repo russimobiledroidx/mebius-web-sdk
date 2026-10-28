@@ -135,7 +135,9 @@ export class SignalingClient {
     streamId: string,
     offer: string,
   ): Promise<SessionResult> {
-    const url = this.withToken(`${this.base()}/${this.pathFor(kind)}/${encodeURIComponent(streamId)}`);
+    const url = this.withToken(
+      `${this.base()}/${this.pathFor(kind)}/${encodeURIComponent(streamId)}`,
+    );
     let res: Response;
     try {
       res = await fetch(url, {
@@ -154,7 +156,11 @@ export class SignalingClient {
       throw mebiusError("STREAM_NOT_FOUND");
     }
     if (!res.ok) {
-      throw mebiusError("CONNECTION_FAILED", `Mebius gateway returned ${res.status}.`);
+      // The status rides along as the cause: callers that can tell a refusal
+      // from a hiccup (the screen viewer) need it, the rest ignore it.
+      throw mebiusError("CONNECTION_FAILED", `Mebius gateway returned ${res.status}.`, {
+        status: res.status,
+      });
     }
 
     const answer = await res.text();

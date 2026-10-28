@@ -28,6 +28,7 @@ npm i @mebius-io/react
 | `useMebius({ appId, gateway, token, deliveries?, beaconToken?, beaconUrl?, userId? })` | `{ client, status, error }` |
 | `useBroadcaster(client, options?)` | `{ broadcaster, previewRef, start, stop, switchCamera, setMicEnabled, setCameraEnabled, isLive }` |
 | `usePlayer(client, { mode })` | `{ player, videoRef, play, stop, setVolume, isPlaying }` |
+| `useScreenViewer({ appId, gateway, sessionId, token, iceServers?, control?, refreshToken? })` | `{ viewer, videoRef, status, error }` |
 
 ## Broadcast
 
@@ -70,6 +71,35 @@ function Watch({ token, streamId }: { token: string; streamId: string }) {
 
 > Next.js: render komponen ini sebagai client component (`"use client"`) dan
 > import dinamis dengan `{ ssr: false }` karena SDK butuh WebRTC browser.
+
+## Screen viewer
+
+```tsx
+import { useScreenViewer } from "@mebius-io/react";
+
+function LiveScreen({ session, control }: { session: { sessionId: string; token: string }; control: boolean }) {
+  const { videoRef, status } = useScreenViewer({
+    appId: "app_123",
+    gateway: "https://stream.mebius.io",
+    sessionId: session.sessionId,
+    token: session.token,
+    control,
+    refreshToken: async () =>
+      (await (await fetch(`/api/sessions/${session.sessionId}/token`, { method: "POST" })).json()).token,
+  });
+  return (
+    <>
+      <video ref={videoRef} autoPlay muted playsInline style={{ width: "100%" }} />
+      {status === "ended" && <p>Sesi selesai</p>}
+    </>
+  );
+}
+```
+
+`status`: `"idle" | "connecting" | "watching" | "ended" | "error"`. Berikan
+`token` awal sesi terus; viewer memperbarui tokennya sendiri lewat
+`refreshToken`, dan `token` baru di prop membuka ulang gambar. Lihat README
+`@mebius-io/web` bagian Screen share.
 
 ## `deliveries` / `beaconToken` / `beaconUrl`
 

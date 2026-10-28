@@ -45,9 +45,10 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
     private readonly options: BroadcasterOptions,
     private readonly telemetry: TelemetryTarget | null = null,
     private readonly userId?: string,
+    iceServers?: readonly RTCIceServer[],
   ) {
     super();
-    this.transport = createPublishTransport(signaling, options.maxBitrateKbps);
+    this.transport = createPublishTransport(signaling, options.maxBitrateKbps, iceServers);
   }
 
   /** Begin broadcasting under the given stream id. */
@@ -82,7 +83,8 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
 
   /** Flip between front and back camera (where available). */
   async switchCamera(): Promise<void> {
-    if (!this.stream) return;
+    // An app-supplied source has no camera of ours to flip.
+    if (!this.stream || this.options.source) return;
     this.facingMode = this.facingMode === "user" ? "environment" : "user";
     const next = await navigator.mediaDevices.getUserMedia({
       video: { ...this.switchBase(), facingMode: this.facingMode },
@@ -137,6 +139,9 @@ export class MebiusBroadcaster extends TypedEmitter<BroadcasterEventMap> {
   }
 
   private async capture(): Promise<MediaStream> {
+    // A clone, so stop() ends only our copy: the app's source keeps running and
+    // can be published again (a screen share serves one session after another).
+    if (this.options.source) return this.options.source.clone();
     const video = normalize(this.options.video, this.ladderSource ? DEFAULT_VIDEO_CAPTURE : true);
     const audio = normalize(this.options.audio, true);
     try {

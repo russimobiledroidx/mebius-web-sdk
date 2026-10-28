@@ -9,6 +9,8 @@ export { MebiusClient } from "./client.js";
 export { MebiusBroadcaster } from "./broadcaster.js";
 export { MebiusPlayer } from "./player.js";
 export { MebiusCaptions } from "./captions.js";
+export { MebiusScreenViewer } from "./screen-viewer.js";
+export { MebiusScreenShare } from "./screen-share.js";
 export { MebiusError, mebiusError } from "./errors.js";
 
 export type {
@@ -16,6 +18,8 @@ export type {
   BroadcasterEventMap,
   PlayerEventMap,
   CaptionsEventMap,
+  ScreenViewerEventMap,
+  ScreenShareEventMap,
 } from "./events.js";
 
 export type {
@@ -36,4 +40,11 @@ export type {
   CaptionsOptions,
   CaptionSegment,
   MebiusErrorCode,
+  ScreenWatchOptions,
+  ScreenControlOptions,
+  ScreenCredentials,
+  ScreenCredentialStore,
+  ScreenShareOptions,
+  ScreenDeviceInfo,
+  ScreenSessionInfo,
 } from "./types.js";

@@ -249,6 +249,84 @@ Tanpa dua field itu stream tetap jalan normal; kamu hanya tidak melihat data
 kualitasnya. Tambahkan `userId` di `connect()` kalau ingin laporan itu ikut membawa
 id pengguna versimu.
 
+## Screen share (lihat & kontrol layar)
+
+Untuk app monitoring / remote support. Backend kamu (pakai `sk_` key) membuat
+sesi lewat REST `/api/v1/screen/...` dan mengembalikan `{ sessionId, token, iceServers? }`
+ke browser. Screen viewer dan screen share **tidak butuh** `Mebius.connect()`;
+cukup `Mebius.init()`.
+
+### Dashboard admin: lihat (dan kontrol) layar
+
+```ts
+import { Mebius } from "@mebius-io/web";
+
+Mebius.init({ appId: "app_123", gateway: "https://stream.mebius.io" });
+
+const { sessionId, token, iceServers } = await fetch(`/api/devices/${deviceId}/view`, {
+  method: "POST",
+  body: JSON.stringify({ mode: "control" }),
+}).then((r) => r.json());
+
+const viewer = Mebius.createScreenViewer();
+viewer.on("ended", () => console.log("sesi selesai"));
+viewer.on("error", (e) => console.warn(e.code, e.message));
+
+// Retry sendiri ±15 detik selama device belum mulai mengirim layar. Resolve saat
+// Mebius menerima viewer; gambar menyusul sesaat kemudian.
+await viewer.watch({ sessionId, token, iceServers }, "#screen"); // <video id="screen" autoplay muted playsinline>
+
+// Mode control saja. Mouse, wheel, keyboard di elemen video dikirim ke layar
+// karyawan (keyboard aktif selama video fokus; klik video untuk fokus).
+viewer.enableControl({
+  refreshToken: async () =>
+    (await (await fetch(`/api/sessions/${sessionId}/token`, { method: "POST" })).json()).token,
+});
+
+viewer.disableControl(); // tetap menonton
+viewer.close();          // berhenti menonton; sesi berakhir sendiri 60 detik kemudian
+```
+
+- Koordinat dikirim sebagai pecahan 0–1 dari **gambar layar**, bukan elemen
+  (bar hitam `object-fit: contain` tidak dihitung). Klik di bar diabaikan.
+- Input dikirim per frame (maks 64 event per request). View token berlaku 10
+  menit dan dicek di setiap input, jadi `refreshToken` dipanggil sebelum token
+  habis, dan sekali lagi kalau Mebius menolak token.
+- Selama video fokus, **semua** tombol dikirim ke layar karyawan, termasuk Tab
+  dan Escape. Klik di luar video untuk mengembalikan keyboard ke halaman; tombol
+  yang masih ditekan dilepas otomatis.
+- Koneksi yang putus dibuka ulang sendiri. Kalau Mebius menolak (sesi sudah
+  berakhir), viewer memancarkan `ended` lalu menutup diri. Tanpa mode control,
+  view token tidak diperbarui, jadi koneksi yang putus setelah 10 menit juga
+  berakhir dengan `ended`.
+- Sesi `view` menolak input: `error` dengan `PERMISSION_DENIED`, lalu kontrol
+  dimatikan otomatis.
+
+### Karyawan: share layar dari browser (tanpa install)
+
+```ts
+const share = Mebius.createScreenShare(); // device secret disimpan di localStorage browser ini
+await share.enrollIfNeeded(enrollCode);   // kode sekali pakai dari backend kamu
+
+// Harus langsung dari klik: browser hanya menampilkan dialog pilih layar dari gesture user.
+startButton.onclick = () => share.start(); // pilih layar, lalu device online
+stopButton.onclick = () => share.stop();   // device offline
+
+share.on("viewing", ({ sessionId, mode, userId }) => showBanner("Layar Anda sedang dilihat"));
+share.on("ended", () => hideBanner());
+share.on("stopped", () => showStartButton()); // juga saat user klik "Stop sharing" di browser
+```
+
+- Device hanya online selama share berjalan. Remote control tidak mungkin dari
+  browser; sesi `control` ditayangkan seperti `view`.
+- Simpan device secret di tempat lain dengan `createScreenShare({ credentials })`
+  (`{ load, save, clear }`). Kalau data situs dihapus, enroll ulang dengan kode baru.
+- Device yang dicabut: credential dihapus, `error` (`TOKEN_EXPIRED`), lalu `stopped`.
+
+Broadcaster biasa juga bisa mengirim stream milik app sendiri (mis. hasil
+`getDisplayMedia`): `client.createBroadcaster({ source: stream })`. Kamera dan
+mikrofon tidak diminta, dan `stop()` tidak menghentikan `source` kamu.
+
 ## Integrasi per framework
 
 ### Vanilla JS
@@ -346,6 +424,13 @@ tidak membawa bundle mode lain.
 | `MebiusPlayer` | `setQuality("auto" \| id)` | `Promise<void>` | Tolak id di luar `qualities`; playback tidak terganggu. |
 | `MebiusPlayer` | `setMaxQuality(height)` | `void` | Cap untuk `"auto"`, dalam piksel tinggi. `0`/`null` = tanpa cap. |
 | `MebiusPlayer` | `setAllowedQualities(ids \| null)` | `Promise<void>` | Batasi rendition yang boleh diterima. `null`/`[]` = semua. |
+| `Mebius` | `createScreenViewer()` | `MebiusScreenViewer` | Butuh `init()` saja. |
+| `MebiusScreenViewer` | `watch({ sessionId, token, iceServers? }, viewTarget)` | `Promise<void>` | Retry ±15 detik sampai Mebius menerima viewer. |
+| `MebiusScreenViewer` | `enableControl({ refreshToken })` / `disableControl()` | `void` | Sesi `control` saja. |
+| `MebiusScreenViewer` | `close()` | `void` | |
+| `Mebius` | `createScreenShare({ credentials? })` | `MebiusScreenShare` | Butuh `init()` saja. |
+| `MebiusScreenShare` | `enrollIfNeeded(code, { name?, os? }?)` | `Promise<void>` | Default `name: "browser"`, `os: "web"`. |
+| `MebiusScreenShare` | `start()` / `stop()` | `Promise<void>` | `start()` langsung dari klik. |
 
 ### Events
 
@@ -362,6 +447,12 @@ tidak membawa bundle mode lain.
 | player | `ended` | — |
 | player | `stats` | `{ bitrateKbps, framesPerSecond, latencyMs? }` |
 | player | `qualities-changed` | `MebiusQuality[]` | terbit sekali tiap rute playback diterima |
+| screen viewer | `ended` | — |
+| screen viewer | `error` | `MebiusError` |
+| screen share | `viewing` | `{ sessionId, mode, userId }` |
+| screen share | `ended` | `{ sessionId }` |
+| screen share | `stopped` | — |
+| screen share | `error` | `MebiusError` |
 | player | `quality-changed` | `{ id: string \| null, auto }` | rendition yang tayang berubah (hanya kalau ada ladder) |
 
 ```ts
