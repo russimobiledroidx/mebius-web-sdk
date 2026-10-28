@@ -620,6 +620,15 @@ describe("MebiusScreenViewer after the session ends", () => {
     expect(t.whep).toHaveLength(2);
   });
 
+  it("ends at once when the media server refuses the reopen with 400", async () => {
+    // The media server turns the auth refusal ("session ended") into a 400.
+    const t = viewerEnv([201, 400]);
+    await t.viewer.watch({ sessionId: "scr_1", token: "view" }, t.el);
+    pcs[0]!.remoteClose();
+    await vi.waitFor(() => expect(t.seen).toEqual(["ended"]));
+    expect(t.whep).toHaveLength(2);
+  });
+
   it("ends on a failed connection whose reopen is refused", async () => {
     const t = viewerEnv([201, 404]);
     await t.viewer.watch({ sessionId: "scr_1", token: "view" }, t.el);

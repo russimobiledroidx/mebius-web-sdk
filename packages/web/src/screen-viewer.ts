@@ -94,9 +94,17 @@ export class MebiusScreenViewer extends TypedEmitter<ScreenViewerEventMap> {
       } catch (e) {
         await t.stop();
         if (this.closed) return;
+        // The media server answers a refused handshake with 400,
+        // not 401/403, whatever the auth hook said. Sending the same offer and
+        // token again gets the same 400, so it is a refusal, not a hiccup.
+        const status =
+          e instanceof MebiusError
+            ? (e.cause as { status?: number } | undefined)?.status
+            : undefined;
         const refused =
           !(e instanceof MebiusError) ||
           e.code === "TOKEN_EXPIRED" ||
+          status === 400 ||
           (!initial && e.code === "STREAM_NOT_FOUND");
         if (refused || Date.now() + WATCH_RETRY_MS > deadline) throw e;
         await sleep(WATCH_RETRY_MS);
