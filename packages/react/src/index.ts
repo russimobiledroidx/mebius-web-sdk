@@ -315,7 +315,11 @@ export function useScreenViewer({
     if (!sessionId || !token || !video) return;
     Mebius.init({ appId, gateway });
     const v = Mebius.createScreenViewer();
-    v.on("ended", () => setStatus("ended"));
+    v.on("ended", () => {
+      // An ended viewer is closed: drop it so control cannot be enabled on it.
+      setViewer(null);
+      setStatus("ended");
+    });
     v.on("error", (e) => setError(e));
     setStatus("connecting");
     setError(null);
@@ -344,9 +348,15 @@ export function useScreenViewer({
 
   useEffect(() => {
     if (!viewer || !control) return;
-    viewer.enableControl({
-      refreshToken: () => (refreshRef.current ? refreshRef.current() : Promise.reject(new Error("no refreshToken"))),
-    });
+    try {
+      viewer.enableControl({
+        refreshToken: () => (refreshRef.current ? refreshRef.current() : Promise.reject(new Error("no refreshToken"))),
+      });
+    } catch (e) {
+      // The viewer closed between the render and this effect.
+      setError(e as MebiusError);
+      return;
+    }
     return () => viewer.disableControl();
   }, [viewer, control]);
 

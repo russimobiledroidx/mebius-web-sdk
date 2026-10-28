@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   InputSender,
   MAX_INPUT_BATCH,
+  MIN_INPUT_INTERVAL_MS,
   reconnectDelayMs,
   screenPoint,
   sseParser,
@@ -206,6 +207,7 @@ describe("reconnectDelayMs", () => {
 // ---- WebRTC fakes ---------------------------------------------------------
 
 const pcConfigs: RTCConfiguration[] = [];
+const pcs: FakePc[] = [];
 
 class FakePc {
   iceGatheringState = "complete";
@@ -215,8 +217,22 @@ class FakePc {
   closed = false;
   ontrack: unknown = null;
   onconnectionstatechange: unknown = null;
+  dtls = Object.assign(new EventTarget(), { state: "connected" });
   constructor(config: RTCConfiguration) {
     pcConfigs.push(config);
+    pcs.push(this);
+  }
+  getReceivers() {
+    return [{ transport: this.dtls }];
+  }
+  /** The server closed the session: ICE still looks connected, the secure transport does not. */
+  remoteClose() {
+    this.dtls.state = "closed";
+    this.dtls.dispatchEvent(new Event("statechange"));
+  }
+  fail() {
+    this.connectionState = "failed";
+    (this.onconnectionstatechange as () => void)();
   }
   addTrack(track: { kind: string; stop(): void }) {
     this.senders.push({ track });
@@ -244,6 +260,7 @@ class FakePc {
 
 function stubWebRtc() {
   pcConfigs.length = 0;
+  pcs.length = 0;
   vi.stubGlobal("RTCPeerConnection", FakePc);
   vi.stubGlobal("RTCRtpSender", { getCapabilities: () => null });
   vi.stubGlobal("MediaStream", class {});
@@ -469,5 +486,301 @@ describe("MebiusScreenShare", () => {
     );
     await t.share.enrollIfNeeded("enr_1");
     expect(t.store.value).toEqual({ deviceId: "dev_2", deviceSecret: "dsk_2" });
+  });
+  it("keeps handling events after a malformed or failing one, and still stops", async () => {
+    const t = setup();
+    await t.share.start();
+    await tick();
+    t.send("data: null\n\n");
+    t.send('data: {"type":"session.start"}\n\n'); // no sessionId / publishToken
+    t.send("data: 42\n\n");
+    t.send(start());
+    await vi.waitFor(() => expect(t.seen).toContain("viewing:scr_1:control:admin-42"));
+    await t.share.stop();
+    expect(t.sourceTrack.stop).toHaveBeenCalled();
+    expect(t.seen.at(-1)).toBe("stopped");
+  });
+
+  it("opens one picker for a double click, and a stop during the picker backs out", async () => {
+    const t = setup();
+    let pick: (s: unknown) => void = () => undefined;
+    const source = await t.getDisplayMedia();
+    t.getDisplayMedia.mockClear();
+    t.getDisplayMedia.mockImplementation(() => new Promise((r) => (pick = r)) as never);
+    const a = t.share.start();
+    const b = t.share.start();
+    expect(t.getDisplayMedia).toHaveBeenCalledOnce();
+    await t.share.stop();
+    pick(source);
+    await Promise.all([a, b]);
+    await tick();
+    expect(t.sourceTrack.stop).toHaveBeenCalled();
+    expect(t.requests).toEqual([]); // never went online
+  });
+
+  it("keeps the credentials on a 403 (only a 401 means the secret is dead)", async () => {
+    const t = setup(403);
+    await t.share.start();
+    await vi.waitFor(() => expect(t.seen).toEqual(["error:PERMISSION_DENIED", "stopped"]));
+    expect(t.store.value).not.toBeNull();
+  });
+
+  it("saves nothing when enrollment returns no credentials", async () => {
+    const t = setup();
+    t.store.value = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ deviceId: "dev_2" }), { status: 201 })),
+    );
+    await expect(t.share.enrollIfNeeded("enr_1")).rejects.toMatchObject({
+      code: "CONNECTION_FAILED",
+    });
+    expect(t.store.value).toBeNull();
+  });
+
+  it("keeps each engine's device apart in localStorage", async () => {
+    const data = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => data.get(k) ?? null,
+      setItem: (k: string, v: string) => void data.set(k, v),
+      removeItem: (k: string) => void data.delete(k),
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ deviceId: "dev_9", deviceSecret: "dsk_9" }), {
+            status: 201,
+          }),
+      ),
+    );
+    await new MebiusScreenShare("https://a.example/").enrollIfNeeded("enr_1");
+    expect([...data.keys()]).toEqual(["mebius.screen.device:https://a.example"]);
+    data.set("mebius.screen.device:https://b.example", "not json");
+    await new MebiusScreenShare("https://b.example").enrollIfNeeded("enr_2"); // corrupt entry: enrolls again
+    expect(JSON.parse(data.get("mebius.screen.device:https://b.example")!)).toEqual({
+      deviceId: "dev_9",
+      deviceSecret: "dsk_9",
+    });
+  });
+});
+
+// ---- viewer: the session ending, control input ------------------------------
+
+class FakeElement extends EventTarget {
+  srcObject = null;
+  tabIndex = -1;
+  style = { touchAction: "" };
+  videoWidth = 1000;
+  videoHeight = 1000;
+  removeAttribute() {}
+  load() {}
+  focus() {}
+  setPointerCapture() {}
+  getBoundingClientRect() {
+    return { left: 0, top: 0, width: 1000, height: 1000 };
+  }
+}
+
+function viewerEnv(whepStatuses: number[]) {
+  vi.stubGlobal("HTMLVideoElement", FakeElement);
+  vi.stubGlobal("getComputedStyle", () => ({ objectFit: "fill" }));
+  stubWebRtc();
+  const inputs: ScreenInputEvent[][] = [];
+  const whep: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init: RequestInit = {}) => {
+      if (url.includes("/input")) {
+        inputs.push(JSON.parse(init.body as string).events);
+        return new Response(null, { status: 204 });
+      }
+      if (init.method === "DELETE") return new Response(null, { status: 200 });
+      whep.push(url);
+      const status = whepStatuses.shift() ?? 201;
+      return status === 201
+        ? new Response("answer", { status })
+        : new Response(JSON.stringify({ code: "FORBIDDEN", message: "session ended" }), { status });
+    }),
+  );
+  const video = new FakeElement();
+  const viewer = new MebiusScreenViewer("https://gw");
+  const seen: string[] = [];
+  viewer.on("ended", () => seen.push("ended"));
+  viewer.on("error", (e) => seen.push(`error:${e.code}`));
+  return { video, viewer, seen, inputs, whep, el: video as unknown as HTMLVideoElement };
+}
+
+describe("MebiusScreenViewer after the session ends", () => {
+  it("ends when the server closes the picture and refuses the reopen", async () => {
+    const t = viewerEnv([201, 403]);
+    await t.viewer.watch({ sessionId: "scr_1", token: "view" }, t.el);
+    pcs[0]!.remoteClose(); // ICE still "connected": only the secure transport knows
+    await vi.waitFor(() => expect(t.seen).toEqual(["ended"]));
+    expect(t.whep).toHaveLength(2);
+  });
+
+  it("ends on a failed connection whose reopen is refused", async () => {
+    const t = viewerEnv([201, 404]);
+    await t.viewer.watch({ sessionId: "scr_1", token: "view" }, t.el);
+    pcs[0]!.fail();
+    await vi.waitFor(() => expect(t.seen).toEqual(["ended"]));
+  });
+
+  it("keeps watching when the reopen is accepted (a network blip)", async () => {
+    const t = viewerEnv([201, 201]);
+    await t.viewer.watch({ sessionId: "scr_1", token: "view" }, t.el);
+    pcs[0]!.fail();
+    await vi.waitFor(() => expect(t.whep).toHaveLength(2));
+    await tick();
+    expect(t.seen).toEqual([]);
+    expect(pcs[0]!.closed).toBe(true);
+    t.viewer.close();
+  });
+
+  it("settles quietly when closed during watch()", async () => {
+    const t = viewerEnv([]);
+    const watching = t.viewer.watch({ sessionId: "scr_1", token: "view" }, t.el);
+    t.viewer.close();
+    await expect(watching).resolves.toBeUndefined();
+  });
+});
+
+describe("MebiusScreenViewer control", () => {
+  const pointer = (type: string, buttons: number, x = 500, y = 500) =>
+    Object.assign(new Event(type), { clientX: x, clientY: y, buttons, pointerId: 1 });
+  const key = (type: string, code: string, repeat = false) =>
+    Object.assign(new Event(type), { code, repeat });
+
+  async function controlled() {
+    const t = viewerEnv([]);
+    await t.viewer.watch({ sessionId: "scr_1", token: "view" }, t.el);
+    t.viewer.enableControl({ refreshToken: async () => "view" });
+    const sent = async () => {
+      await new Promise((r) => setTimeout(r, 60));
+      return t.inputs
+        .flat()
+        .map((e) =>
+          "button" in e ? `${e.type}:${e.button}` : "key" in e ? `${e.type}:${e.key}` : e.type,
+        );
+    };
+    return { ...t, sent };
+  }
+
+  it("follows the button mask: chords, no release without a press, presses only on the picture", async () => {
+    const t = await controlled();
+    t.video.dispatchEvent(pointer("pointerup", 0)); // nothing was pressed
+    t.video.dispatchEvent(pointer("pointerdown", 1));
+    t.video.dispatchEvent(pointer("pointermove", 3)); // right pressed while left is held
+    t.video.dispatchEvent(pointer("pointerup", 2));
+    t.video.dispatchEvent(pointer("pointerup", 0));
+    expect(await t.sent()).toEqual(["down:left", "move", "down:right", "up:left", "up:right"]);
+    expect(t.video.style.touchAction).toBe("none");
+    t.viewer.close();
+  });
+
+  it("releases held buttons on pointercancel and held keys and buttons on disableControl", async () => {
+    const t = await controlled();
+    t.video.dispatchEvent(pointer("pointerdown", 1));
+    t.video.dispatchEvent(pointer("pointercancel", 0));
+    t.video.dispatchEvent(pointer("pointerdown", 4));
+    t.video.dispatchEvent(key("keydown", "ShiftLeft"));
+    t.viewer.disableControl();
+    expect(await t.sent()).toEqual([
+      "down:left",
+      "up:left",
+      "down:middle",
+      "keydown:ShiftLeft",
+      "up:middle",
+      "keyup:ShiftLeft",
+    ]);
+    expect(t.video.style.touchAction).toBe("");
+    t.viewer.close();
+  });
+
+  it("skips auto-repeat and releases keys held under Meta when Meta goes up", async () => {
+    const t = await controlled();
+    t.video.dispatchEvent(key("keydown", "MetaLeft"));
+    t.video.dispatchEvent(key("keydown", "KeyC"));
+    t.video.dispatchEvent(key("keydown", "KeyC", true));
+    t.video.dispatchEvent(key("keyup", "MetaLeft")); // macOS sends no keyup for KeyC
+    t.video.dispatchEvent(key("keyup", "KeyC")); // a late one is not sent twice
+    expect(await t.sent()).toEqual([
+      "keydown:MetaLeft",
+      "keydown:KeyC",
+      "keyup:MetaLeft",
+      "keyup:KeyC",
+    ]);
+    t.viewer.close();
+  });
+});
+
+describe("InputSender pacing and outages", () => {
+  function paced(statuses: number[]) {
+    const at: number[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        at.push(Date.now());
+        return new Response(null, { status: statuses.shift() ?? 204 });
+      }),
+    );
+    const errors: string[] = [];
+    const s = new InputSender(
+      "https://gw/input",
+      () => "t",
+      async () => false,
+      (e) => errors.push(e.code),
+      (cb) => cb(),
+    );
+    return { s, at, errors };
+  }
+
+  it("leaves at least 20ms between requests, batching what arrives meanwhile", async () => {
+    const t = paced([]);
+    t.s.push({ type: "keydown", key: "K0" });
+    await vi.waitFor(() => expect(t.at).toHaveLength(1));
+    t.s.push({ type: "keydown", key: "K1" });
+    t.s.push({ type: "keyup", key: "K1" });
+    await vi.waitFor(() => expect(t.at).toHaveLength(2));
+    expect(t.at[1]! - t.at[0]!).toBeGreaterThanOrEqual(MIN_INPUT_INTERVAL_MS - 1);
+  });
+
+  it("retries a rate-limited batch instead of dropping it", async () => {
+    const t = paced([429]);
+    t.s.push({ type: "down", x: 0.5, y: 0.5, button: "left" });
+    await vi.waitFor(() => expect(t.at).toHaveLength(2), { timeout: 2000 });
+    expect(t.errors).toEqual([]);
+  });
+
+  it("reports an outage once, and again only after a success", async () => {
+    const t = paced([500, 500, 204, 500]);
+    for (let i = 0; i < 4; i++) {
+      t.s.push({ type: "keydown", key: `K${i}` });
+      await vi.waitFor(() => expect(t.at).toHaveLength(i + 1));
+    }
+    await tick();
+    expect(t.errors).toEqual(["CONNECTION_FAILED", "CONNECTION_FAILED"]);
+  });
+});
+
+describe("MebiusScreenViewer token refresh timing", () => {
+  const jwt = (expMs: number) =>
+    `h.${Buffer.from(JSON.stringify({ exp: Math.floor(expMs / 1000) })).toString("base64url")}.s`;
+
+  it("waits at least 5s, and does not re-arm for a token that is not newer", async () => {
+    const t = viewerEnv([]);
+    const short = jwt(Date.now() + 30_000); // inside the 60s margin
+    await t.viewer.watch({ sessionId: "scr_1", token: short }, t.el);
+    vi.useFakeTimers();
+    const refresh = vi.fn(async () => short);
+    t.viewer.enableControl({ refreshToken: refresh });
+    await vi.advanceTimersByTimeAsync(4900);
+    expect(refresh).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(refresh).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(refresh).toHaveBeenCalledOnce();
+    t.viewer.close();
   });
 });

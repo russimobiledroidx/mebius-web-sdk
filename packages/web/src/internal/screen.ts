@@ -16,6 +16,16 @@ export type ScreenInputEvent =
 /** The engine's per-request ceiling. */
 export const MAX_INPUT_BATCH = 64;
 
+/**
+ * Least time between two input requests. The engine allows 3600 a minute per
+ * session; frames alone would exceed that on a 120 Hz display.
+ */
+export const MIN_INPUT_INTERVAL_MS = 20;
+
+/** Retries of a rate-limited batch, and the delay before the first. */
+const RATE_LIMIT_RETRIES = 3;
+const RATE_LIMIT_DELAY_MS = 250;
+
 /** The engine's ceiling on one wheel delta. */
 export const MAX_WHEEL_DELTA = 10_000;
 
@@ -74,6 +84,8 @@ export async function responseError(res: Response): Promise<MebiusError> {
   return mebiusError("CONNECTION_FAILED", message ?? `Mebius returned ${res.status}.`);
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 function nextFrame(cb: () => void): void {
   if (typeof requestAnimationFrame === "function") requestAnimationFrame(cb);
   else setTimeout(cb, 16);
@@ -89,6 +101,9 @@ export class InputSender {
   private queue: ScreenInputEvent[] = [];
   private scheduled = false;
   private sending = false;
+  private lastSentAt = 0;
+  /** Set once a failure was reported, until a request succeeds: one report per outage. */
+  private failing = false;
 
   constructor(
     private readonly url: string,
@@ -115,13 +130,18 @@ export class InputSender {
   private async drain(): Promise<void> {
     this.sending = true;
     try {
-      while (this.queue.length > 0) await this.send(this.queue.splice(0, MAX_INPUT_BATCH));
+      while (this.queue.length > 0) {
+        const wait = this.lastSentAt + MIN_INPUT_INTERVAL_MS - Date.now();
+        if (wait > 0) await sleep(wait);
+        await this.send(this.queue.splice(0, MAX_INPUT_BATCH));
+      }
     } finally {
       this.sending = false;
     }
   }
 
-  private async send(events: ScreenInputEvent[], retried = false): Promise<void> {
+  private async send(events: ScreenInputEvent[], attempt = 0, refreshed = false): Promise<void> {
+    this.lastSentAt = Date.now();
     let res: Response;
     try {
       res = await fetch(this.url, {
@@ -130,13 +150,28 @@ export class InputSender {
         body: JSON.stringify({ events }),
       });
     } catch (cause) {
-      this.onError(mebiusError("CONNECTION_FAILED", undefined, cause));
+      this.fail(mebiusError("CONNECTION_FAILED", undefined, cause));
       return;
     }
-    // Input is dropped rather than queued on failure: a click replayed seconds
-    // late lands on whatever the screen shows by then.
-    if (res.status === 401 && !retried && (await this.refresh())) return this.send(events, true);
-    if (!res.ok) this.onError(await responseError(res));
+    if (res.ok) {
+      this.failing = false;
+      return;
+    }
+    if (res.status === 401 && !refreshed && (await this.refresh()))
+      return this.send(events, attempt, true);
+    // Rate limited: the batch may hold a click or a key, so it is worth a
+    // short wait. Any other failure drops it: a click replayed seconds late
+    // lands on whatever the screen shows by then.
+    if (res.status === 429 && attempt < RATE_LIMIT_RETRIES) {
+      await sleep(RATE_LIMIT_DELAY_MS * (attempt + 1));
+      return this.send(events, attempt + 1, refreshed);
+    }
+    this.fail(await responseError(res));
+  }
+
+  private fail(e: MebiusError): void {
+    if (!this.failing) this.onError(e);
+    this.failing = true;
   }
 }
 

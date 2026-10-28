@@ -14,12 +14,20 @@ import type { ScreenControlOptions, ScreenWatchOptions, ViewTarget } from "./typ
  */
 const WATCH_RETRY_MS = 1000;
 const WATCH_BUDGET_MS = 15_000;
-/** A dropped connection that has not come back after this long is over. */
-const LOST_GRACE_MS = 3000;
-/** Renew the view token this long before it expires. */
+/** An ICE `disconnected` gets this long to come back on its own before reconnecting. */
+const DISCONNECT_GRACE_MS = 2000;
+/** Renew the view token this long before it expires… */
 const REFRESH_MARGIN_MS = 60_000;
+/** …but never sooner than this, so a short-lived or skewed token cannot spin the timer. */
+const MIN_REFRESH_DELAY_MS = 5000;
 
-const BUTTONS = ["left", "middle", "right"] as const;
+type Button = "left" | "middle" | "right";
+/** `PointerEvent.buttons` bits. */
+const BUTTON_BITS: readonly [number, Button][] = [
+  [1, "left"],
+  [2, "right"],
+  [4, "middle"],
+];
 
 /** `deltaMode` lines and pages, in the pixels the engine expects. */
 const WHEEL_UNIT = [1, 40, 800];
@@ -36,10 +44,12 @@ export class MebiusScreenViewer extends TypedEmitter<ScreenViewerEventMap> {
   private transport: WhepViewTransport | null = null;
   private signaling: SignalingClient | null = null;
   private video: HTMLVideoElement | null = null;
+  private iceServers: RTCIceServer[] | undefined;
   private sessionId = "";
   private token = "";
   private closed = false;
-  private lostTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnecting = false;
+  private graceTimer: ReturnType<typeof setTimeout> | null = null;
 
   private refreshToken: ScreenControlOptions["refreshToken"] | null = null;
   private refreshing: Promise<boolean> | null = null;
@@ -52,47 +62,84 @@ export class MebiusScreenViewer extends TypedEmitter<ScreenViewerEventMap> {
   }
 
   /**
-   * Show the session's screen in `target`. Resolves once the picture is
-   * connected; rejects if it could not be within about 15 seconds.
+   * Show the session's screen in `target`. Resolves once Mebius has accepted
+   * this viewer (the picture follows within moments); rejects if that did not
+   * happen within about 15 seconds, or at once if the token was refused.
+   *
+   * A connection lost later is reopened on its own. If Mebius refuses the
+   * reopen (the session ended), `ended` is emitted and the viewer closes.
    */
   async watch(options: ScreenWatchOptions, target: ViewTarget): Promise<void> {
     if (this.closed) throw mebiusError("NOT_CONNECTED", "This screen viewer was closed.");
-    const video = resolveVideoElement(target);
-    this.video = video;
+    this.video = resolveVideoElement(target);
     this.sessionId = options.sessionId;
     this.token = options.token;
+    this.iceServers = options.iceServers;
     this.signaling = new SignalingClient(this.gateway, options.token);
+    await this.connect(true);
+  }
+
+  /**
+   * Open the picture, retrying inside the budget. `initial`: the device may not
+   * be sending yet, so "not found" is retried; once watching, it means the
+   * session is over.
+   */
+  private async connect(initial: boolean): Promise<void> {
     const deadline = Date.now() + WATCH_BUDGET_MS;
     for (;;) {
-      const t = new WhepViewTransport(this.signaling, undefined, options.iceServers);
+      const t = new WhepViewTransport(this.signaling!, undefined, this.iceServers);
       this.transport = t;
       try {
-        await t.start(options.sessionId, video);
-        break;
+        await t.start(this.sessionId, this.video!);
       } catch (e) {
         await t.stop();
         if (this.closed) return;
-        const retryable = e instanceof MebiusError && e.code !== "TOKEN_EXPIRED";
-        if (!retryable || Date.now() + WATCH_RETRY_MS > deadline) throw e;
+        const refused =
+          !(e instanceof MebiusError) ||
+          e.code === "TOKEN_EXPIRED" ||
+          (!initial && e.code === "STREAM_NOT_FOUND");
+        if (refused || Date.now() + WATCH_RETRY_MS > deadline) throw e;
         await sleep(WATCH_RETRY_MS);
         if (this.closed) return;
+        continue;
       }
+      // close() while the exchange was in flight: start() already left nothing attached.
+      if (this.closed) return;
+      t.onEnded(() => this.lost(t));
+      t.onBuffering(() => {
+        if (t.connectionState !== "disconnected") return this.lost(t);
+        // ICE often recovers from a brief disconnect by itself.
+        if (this.graceTimer) return;
+        this.graceTimer = setTimeout(() => {
+          this.graceTimer = null;
+          if (t.connectionState !== "connected") this.lost(t);
+        }, DISCONNECT_GRACE_MS);
+      });
+      return;
     }
-    const t = this.transport;
-    t.onEnded(() => this.end());
-    t.onBuffering(() => {
-      if (this.lostTimer) return;
-      this.lostTimer = setTimeout(() => {
-        this.lostTimer = null;
-        if (this.transport === t && t.connectionState !== "connected") this.end();
-      }, LOST_GRACE_MS);
-    });
+  }
+
+  /**
+   * The picture's connection went away. Ask for it again: that tells a network
+   * blip (accepted, watching resumes) from an ended session (refused).
+   */
+  private lost(t: WhepViewTransport): void {
+    if (this.closed || this.reconnecting || this.transport !== t) return;
+    this.reconnecting = true;
+    void t.stop();
+    this.connect(false).then(
+      () => (this.reconnecting = false),
+      () => this.end(),
+    );
   }
 
   /**
    * Send this viewer's mouse, wheel and keyboard to the shared screen. Only a
-   * session created with mode `control` accepts input. Keys are captured while
-   * the video element has focus (a click on it focuses it).
+   * session created with mode `control` accepts input.
+   *
+   * Keys are captured while the video element has focus (a click on it focuses
+   * it), Tab and Escape included: they go to the shared screen. Click outside
+   * the video to take the keyboard back.
    */
   enableControl(options: ScreenControlOptions): void {
     const video = this.video;
@@ -100,7 +147,7 @@ export class MebiusScreenViewer extends TypedEmitter<ScreenViewerEventMap> {
       throw mebiusError("NOT_CONNECTED", "Call watch() before enableControl().");
     this.disableControl();
     this.refreshToken = options.refreshToken;
-    this.scheduleRefresh();
+    this.scheduleRefresh(null);
     const sender = new InputSender(
       `${this.gateway.replace(/\/+$/, "")}/api/v1/screen/sessions/${encodeURIComponent(this.sessionId)}/input`,
       () => this.token,
@@ -112,7 +159,9 @@ export class MebiusScreenViewer extends TypedEmitter<ScreenViewerEventMap> {
       },
     );
 
-    const held = new Set<string>();
+    const keys = new Set<string>();
+    const buttons = new Set<Button>();
+    let last: { x: number; y: number } | null = null;
     const point = (ev: MouseEvent) =>
       screenPoint(
         video.getBoundingClientRect(),
@@ -122,25 +171,41 @@ export class MebiusScreenViewer extends TypedEmitter<ScreenViewerEventMap> {
         ev.clientX,
         ev.clientY,
       );
+    /**
+     * Bring the shared screen's buttons in line with `ev.buttons`. Driven by the
+     * bitmask rather than `ev.button` because a second button pressed while one
+     * is held arrives as a `pointermove`, not a `pointerdown`. A release is only
+     * sent for a press that was sent, and a press only lands on the picture.
+     */
+    const sync = (ev: PointerEvent) => {
+      const p = point(ev);
+      if (p) last = { x: p.x, y: p.y };
+      for (const [bit, button] of BUTTON_BITS) {
+        const down = (ev.buttons & bit) !== 0;
+        if (down && !buttons.has(button) && p?.inside) {
+          buttons.add(button);
+          sender.push({ type: "down", x: p.x, y: p.y, button });
+        } else if (!down && buttons.has(button) && last) {
+          buttons.delete(button);
+          sender.push({ type: "up", ...last, button });
+        }
+      }
+    };
+    const releaseButtons = () => {
+      if (last) for (const button of buttons) sender.push({ type: "up", ...last, button });
+      buttons.clear();
+    };
     const onMove = (ev: PointerEvent) => {
       const p = point(ev);
       if (p) sender.push({ type: "move", x: p.x, y: p.y });
+      sync(ev);
     };
     const onDown = (ev: PointerEvent) => {
-      const p = point(ev);
-      const button = BUTTONS[ev.button];
-      // A press on the bars around the picture is not a press on the screen.
-      if (!p?.inside || !button) return;
       ev.preventDefault();
       video.focus();
       // So the release still arrives when it happens outside the element.
       video.setPointerCapture?.(ev.pointerId);
-      sender.push({ type: "down", x: p.x, y: p.y, button });
-    };
-    const onUp = (ev: PointerEvent) => {
-      const p = point(ev);
-      const button = BUTTONS[ev.button];
-      if (p && button) sender.push({ type: "up", x: p.x, y: p.y, button });
+      sync(ev);
     };
     const onWheel = (ev: WheelEvent) => {
       ev.preventDefault();
@@ -149,44 +214,54 @@ export class MebiusScreenViewer extends TypedEmitter<ScreenViewerEventMap> {
         Math.max(-MAX_WHEEL_DELTA, Math.min(MAX_WHEEL_DELTA, Math.round(d * unit)));
       sender.push({ type: "wheel", dx: clamp(ev.deltaX), dy: clamp(ev.deltaY) });
     };
-    const onKey = (ev: KeyboardEvent) => {
-      if (!ev.code) return;
-      ev.preventDefault();
-      if (ev.type === "keydown") held.add(ev.code);
-      else held.delete(ev.code);
-      sender.push({ type: ev.type === "keydown" ? "keydown" : "keyup", key: ev.code });
-    };
     // Keys still down when focus leaves would otherwise stay down on the
     // shared screen: their keyup goes to whatever has focus now.
     const releaseKeys = () => {
-      for (const key of held) sender.push({ type: "keyup", key });
-      held.clear();
+      for (const key of keys) sender.push({ type: "keyup", key });
+      keys.clear();
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (!ev.code) return;
+      ev.preventDefault();
+      if (ev.type === "keydown") {
+        // The shared screen repeats a held key itself.
+        if (ev.repeat || keys.has(ev.code)) return;
+        keys.add(ev.code);
+        sender.push({ type: "keydown", key: ev.code });
+        return;
+      }
+      if (!keys.delete(ev.code)) return;
+      sender.push({ type: "keyup", key: ev.code });
+      // macOS fires no keyup for keys released while Meta was held.
+      if (ev.code.startsWith("Meta")) releaseKeys();
     };
     const noMenu = (ev: Event) => ev.preventDefault();
 
     if (video.tabIndex < 0) video.tabIndex = 0;
-    video.addEventListener("pointermove", onMove);
-    video.addEventListener("pointerdown", onDown);
-    video.addEventListener("pointerup", onUp);
-    video.addEventListener("wheel", onWheel, { passive: false });
-    video.addEventListener("keydown", onKey);
-    video.addEventListener("keyup", onKey);
-    video.addEventListener("blur", releaseKeys);
-    video.addEventListener("contextmenu", noMenu);
+    // Without this a touch drag pans the page and the browser cancels the pointer.
+    const touchAction = video.style.touchAction;
+    video.style.touchAction = "none";
+    const listeners: [string, EventListener, AddEventListenerOptions?][] = [
+      ["pointermove", onMove as EventListener],
+      ["pointerdown", onDown as EventListener],
+      ["pointerup", sync as EventListener],
+      ["pointercancel", releaseButtons],
+      ["wheel", onWheel as EventListener, { passive: false }],
+      ["keydown", onKey as EventListener],
+      ["keyup", onKey as EventListener],
+      ["blur", releaseKeys],
+      ["contextmenu", noMenu],
+    ];
+    for (const [type, fn, opts] of listeners) video.addEventListener(type, fn, opts);
     this.unbind = () => {
+      releaseButtons();
       releaseKeys();
-      video.removeEventListener("pointermove", onMove);
-      video.removeEventListener("pointerdown", onDown);
-      video.removeEventListener("pointerup", onUp);
-      video.removeEventListener("wheel", onWheel);
-      video.removeEventListener("keydown", onKey);
-      video.removeEventListener("keyup", onKey);
-      video.removeEventListener("blur", releaseKeys);
-      video.removeEventListener("contextmenu", noMenu);
+      video.style.touchAction = touchAction;
+      for (const [type, fn] of listeners) video.removeEventListener(type, fn);
     };
   }
 
-  /** Stop sending input. Watching continues. */
+  /** Stop sending input, releasing anything still held. Watching continues. */
   disableControl(): void {
     this.unbind?.();
     this.unbind = null;
@@ -204,7 +279,7 @@ export class MebiusScreenViewer extends TypedEmitter<ScreenViewerEventMap> {
     if (this.closed) return;
     this.closed = true;
     this.disableControl();
-    if (this.lostTimer) clearTimeout(this.lostTimer);
+    if (this.graceTimer) clearTimeout(this.graceTimer);
     void this.transport?.stop();
     this.transport = null;
     this.removeAllListeners();
@@ -216,14 +291,20 @@ export class MebiusScreenViewer extends TypedEmitter<ScreenViewerEventMap> {
     this.close();
   }
 
-  private scheduleRefresh(): void {
+  /**
+   * Arm the next renewal. `previousExpMs`: the expiry the renewed token
+   * replaced; a token that does not outlive it arms nothing, leaving renewal to
+   * the next rejected request rather than asking again in a loop.
+   */
+  private scheduleRefresh(previousExpMs: number | null): void {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.refreshTimer = null;
     const { expiresAtMs } = readToken(this.token);
     if (expiresAtMs === null || !this.refreshToken) return;
+    if (previousExpMs !== null && expiresAtMs <= previousExpMs) return;
     this.refreshTimer = setTimeout(
       () => void this.renewToken(),
-      Math.max(0, expiresAtMs - Date.now() - REFRESH_MARGIN_MS),
+      Math.max(MIN_REFRESH_DELAY_MS, expiresAtMs - Date.now() - REFRESH_MARGIN_MS),
     );
   }
 
@@ -245,9 +326,10 @@ export class MebiusScreenViewer extends TypedEmitter<ScreenViewerEventMap> {
     try {
       const next = await refresh();
       if (this.refreshToken !== refresh) return false; // control was disabled meanwhile
+      const previous = readToken(this.token).expiresAtMs;
       this.token = next;
       this.signaling?.setToken(next);
-      this.scheduleRefresh();
+      this.scheduleRefresh(previous);
       return true;
     } catch (cause) {
       this.emit(

@@ -10,37 +10,49 @@ import type {
   ScreenShareOptions,
 } from "./types.js";
 
-const STORAGE_KEY = "mebius.screen.device";
+function isCredentials(v: unknown): v is ScreenCredentials {
+  const c = v as Partial<ScreenCredentials> | null;
+  return (
+    typeof c?.deviceId === "string" &&
+    !!c.deviceId &&
+    typeof c.deviceSecret === "string" &&
+    !!c.deviceSecret
+  );
+}
 
 /**
- * The default store: this browser's `localStorage`. Every access is guarded,
- * since storage can be disabled or full; a browser that cannot keep the
- * credentials simply enrolls again next time.
+ * The default store: this browser's `localStorage`, one entry per engine, so a
+ * page that talks to staging and production keeps two devices apart. Every
+ * access is guarded, since storage can be disabled or full; a browser that
+ * cannot keep the credentials simply enrolls again next time.
  */
-const localCredentials: ScreenCredentialStore = {
-  load() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      return raw ? (JSON.parse(raw) as ScreenCredentials) : null;
-    } catch {
-      return null;
-    }
-  },
-  save(credentials) {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(credentials));
-    } catch {
-      /* see above */
-    }
-  },
-  clear() {
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      /* see above */
-    }
-  },
-};
+function localCredentials(gateway: string): ScreenCredentialStore {
+  const key = `mebius.screen.device:${gateway.replace(/\/+$/, "")}`;
+  return {
+    load() {
+      try {
+        const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? "null");
+        return isCredentials(parsed) ? parsed : null;
+      } catch {
+        return null;
+      }
+    },
+    save(credentials) {
+      try {
+        localStorage.setItem(key, JSON.stringify(credentials));
+      } catch {
+        /* see above */
+      }
+    },
+    clear() {
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        /* see above */
+      }
+    },
+  };
+}
 
 /** An event from the device's event stream. `input` is not handled in a browser. */
 type AgentEvent =
@@ -73,6 +85,10 @@ export class MebiusScreenShare extends TypedEmitter<ScreenShareEventMap> {
   private session: { id: string; broadcaster: MebiusBroadcaster } | null = null;
   /** Events are handled one after another, so a stop never overtakes its start. */
   private queue: Promise<void> = Promise.resolve();
+  /** The start() in progress, so a second click joins it instead of opening a second picker. */
+  private starting: Promise<void> | null = null;
+  /** Bumped by stop(), so a start() still in the picker knows to back out. */
+  private generation = 0;
 
   /** @internal */
   constructor(
@@ -80,7 +96,7 @@ export class MebiusScreenShare extends TypedEmitter<ScreenShareEventMap> {
     options: ScreenShareOptions = {},
   ) {
     super();
-    this.credentials = options.credentials ?? localCredentials;
+    this.credentials = options.credentials ?? localCredentials(gateway);
   }
 
   private url(path: string): string {
@@ -108,8 +124,10 @@ export class MebiusScreenShare extends TypedEmitter<ScreenShareEventMap> {
       throw mebiusError("CONNECTION_FAILED", undefined, cause);
     }
     if (!res.ok) throw await responseError(res);
-    const { deviceId, deviceSecret } = (await res.json()) as ScreenCredentials;
-    await this.credentials.save({ deviceId, deviceSecret });
+    const body: unknown = await res.json().catch(() => null);
+    if (!isCredentials(body))
+      throw mebiusError("CONNECTION_FAILED", "Mebius returned no device credentials.");
+    await this.credentials.save({ deviceId: body.deviceId, deviceSecret: body.deviceSecret });
   }
 
   /**
@@ -117,8 +135,18 @@ export class MebiusScreenShare extends TypedEmitter<ScreenShareEventMap> {
    * straight from a click handler: the browser only shows its picker in
    * response to a user gesture.
    */
-  async start(): Promise<void> {
-    if (this.source) return;
+  start(): Promise<void> {
+    if (this.source) return Promise.resolve();
+    if (!this.starting) {
+      const p = this.open();
+      this.starting = p;
+      void p.catch(() => undefined).finally(() => (this.starting = null));
+    }
+    return this.starting;
+  }
+
+  private async open(): Promise<void> {
+    const generation = this.generation;
     let source: MediaStream;
     try {
       // First, before anything else is awaited: an await in between spends the
@@ -128,6 +156,11 @@ export class MebiusScreenShare extends TypedEmitter<ScreenShareEventMap> {
       throw mebiusError("PERMISSION_DENIED", "Screen sharing was not allowed.", cause);
     }
     const credentials = await this.credentials.load();
+    if (generation !== this.generation) {
+      // stop() was called while the picker was open.
+      source.getTracks().forEach((t) => t.stop());
+      return;
+    }
     if (!credentials) {
       source.getTracks().forEach((t) => t.stop());
       throw mebiusError("UNKNOWN", "This browser is not enrolled. Call enrollIfNeeded() first.");
@@ -144,13 +177,17 @@ export class MebiusScreenShare extends TypedEmitter<ScreenShareEventMap> {
 
   /** Stop sharing and take this device offline. */
   async stop(): Promise<void> {
+    this.generation++;
     if (!this.source) return;
     const source = this.source;
     this.source = null;
+    // The screen stops being captured first, whatever else might hang below.
+    source.getTracks().forEach((t) => t.stop());
     this.abort?.abort();
     this.abort = null;
-    await (this.queue = this.queue.then(() => this.endSession()));
-    source.getTracks().forEach((t) => t.stop());
+    // Directly, not behind queued events: a publish stuck mid-handshake must
+    // not hold up the stop.
+    await this.endSession();
     this.emit("stopped", undefined);
   }
 
@@ -165,9 +202,10 @@ export class MebiusScreenShare extends TypedEmitter<ScreenShareEventMap> {
           signal,
         });
         if (res.status === 401 || res.status === 403) {
-          // Revoked or unknown: retrying cannot help, and the stored secret is
-          // dead, so drop it and let enrollIfNeeded() take a new code.
-          await this.credentials.clear();
+          // Retrying cannot help. A 401 means the secret itself is dead
+          // (revoked or unknown), so drop it and let enrollIfNeeded() take a
+          // new code; a 403 is a refusal the stored secret may outlive.
+          if (res.status === 401) await this.credentials.clear();
           this.emit("error", await responseError(res));
           void this.stop();
           return;
@@ -184,10 +222,11 @@ export class MebiusScreenShare extends TypedEmitter<ScreenShareEventMap> {
         }
       } catch (e) {
         if (signal.aborted) return;
-        if (e instanceof MebiusError) this.emit("error", e);
+        // Once per outage, not once per reconnect attempt.
+        if (e instanceof MebiusError && failures === 0) this.emit("error", e);
       }
       // The engine ends a session whose device dropped off.
-      this.queue = this.queue.then(() => this.endSession());
+      this.enqueue(() => this.endSession());
       await new Promise((r) => setTimeout(r, reconnectDelayMs(failures++)));
     }
   }
@@ -199,7 +238,15 @@ export class MebiusScreenShare extends TypedEmitter<ScreenShareEventMap> {
     } catch {
       return;
     }
-    this.queue = this.queue.then(() => this.handle(ev));
+    if (typeof ev !== "object" || ev === null || typeof ev.type !== "string") return;
+    this.enqueue(() => this.handle(ev));
+  }
+
+  /** Chain `fn` behind earlier events. A link that throws is reported and never blocks the next. */
+  private enqueue(fn: () => Promise<void>): void {
+    this.queue = this.queue.then(fn).catch((e: unknown) => {
+      this.emit("error", e instanceof MebiusError ? e : mebiusError("UNKNOWN", undefined, e));
+    });
   }
 
   private async handle(ev: AgentEvent): Promise<void> {
@@ -207,8 +254,14 @@ export class MebiusScreenShare extends TypedEmitter<ScreenShareEventMap> {
       if (this.session?.id === ev.sessionId) await this.endSession();
       return;
     }
-    if (ev.type !== "session.start" || !this.source) return;
+    if (
+      ev.type !== "session.start" ||
+      typeof ev.sessionId !== "string" ||
+      typeof ev.publishToken !== "string"
+    )
+      return;
     await this.endSession();
+    if (!this.source) return;
     // Before publishing, so the user is told as soon as someone is watching.
     this.emit("viewing", { sessionId: ev.sessionId, mode: ev.mode, userId: ev.userId ?? "" });
     const broadcaster = new MebiusBroadcaster(
@@ -222,6 +275,7 @@ export class MebiusScreenShare extends TypedEmitter<ScreenShareEventMap> {
     try {
       await broadcaster.start(ev.sessionId);
     } catch (e) {
+      if (this.session?.broadcaster !== broadcaster) return; // stopped meanwhile
       this.emit(
         "error",
         e instanceof MebiusError ? e : mebiusError("CONNECTION_FAILED", undefined, e),

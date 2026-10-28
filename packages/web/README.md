@@ -272,7 +272,8 @@ const viewer = Mebius.createScreenViewer();
 viewer.on("ended", () => console.log("sesi selesai"));
 viewer.on("error", (e) => console.warn(e.code, e.message));
 
-// Retry sendiri ±15 detik selama device belum mulai mengirim layar.
+// Retry sendiri ±15 detik selama device belum mulai mengirim layar. Resolve saat
+// Mebius menerima viewer; gambar menyusul sesaat kemudian.
 await viewer.watch({ sessionId, token, iceServers }, "#screen"); // <video id="screen" autoplay muted playsinline>
 
 // Mode control saja. Mouse, wheel, keyboard di elemen video dikirim ke layar
@@ -291,6 +292,13 @@ viewer.close();          // berhenti menonton; sesi berakhir sendiri 60 detik ke
 - Input dikirim per frame (maks 64 event per request). View token berlaku 10
   menit dan dicek di setiap input, jadi `refreshToken` dipanggil sebelum token
   habis, dan sekali lagi kalau Mebius menolak token.
+- Selama video fokus, **semua** tombol dikirim ke layar karyawan, termasuk Tab
+  dan Escape. Klik di luar video untuk mengembalikan keyboard ke halaman; tombol
+  yang masih ditekan dilepas otomatis.
+- Koneksi yang putus dibuka ulang sendiri. Kalau Mebius menolak (sesi sudah
+  berakhir), viewer memancarkan `ended` lalu menutup diri. Tanpa mode control,
+  view token tidak diperbarui, jadi koneksi yang putus setelah 10 menit juga
+  berakhir dengan `ended`.
 - Sesi `view` menolak input: `error` dengan `PERMISSION_DENIED`, lalu kontrol
   dimatikan otomatis.
 
@@ -417,7 +425,7 @@ tidak membawa bundle mode lain.
 | `MebiusPlayer` | `setMaxQuality(height)` | `void` | Cap untuk `"auto"`, dalam piksel tinggi. `0`/`null` = tanpa cap. |
 | `MebiusPlayer` | `setAllowedQualities(ids \| null)` | `Promise<void>` | Batasi rendition yang boleh diterima. `null`/`[]` = semua. |
 | `Mebius` | `createScreenViewer()` | `MebiusScreenViewer` | Butuh `init()` saja. |
-| `MebiusScreenViewer` | `watch({ sessionId, token, iceServers? }, viewTarget)` | `Promise<void>` | Retry ±15 detik sampai layar terkirim. |
+| `MebiusScreenViewer` | `watch({ sessionId, token, iceServers? }, viewTarget)` | `Promise<void>` | Retry ±15 detik sampai Mebius menerima viewer. |
 | `MebiusScreenViewer` | `enableControl({ refreshToken })` / `disableControl()` | `void` | Sesi `control` saja. |
 | `MebiusScreenViewer` | `close()` | `void` | |
 | `Mebius` | `createScreenShare({ credentials? })` | `MebiusScreenShare` | Butuh `init()` saja. |

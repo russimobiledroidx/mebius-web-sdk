@@ -154,6 +154,13 @@ export class WhepViewTransport implements ViewTransport {
     }
     this.resourceUrl = resourceUrl;
     await pc.setRemoteDescription({ type: "answer", sdp: answer });
+    // The server closing this session (it ended, or the publisher left) leaves
+    // ICE looking "connected" until consent checks time out, up to ~30s later.
+    // The secure transport hears the close at once.
+    const dtls = pc.getReceivers?.()[0]?.transport;
+    dtls?.addEventListener?.("statechange", () => {
+      if (this.pc === pc && (dtls.state === "closed" || dtls.state === "failed")) this.bufferingCb?.();
+    });
   }
 
   async stop(): Promise<void> {
