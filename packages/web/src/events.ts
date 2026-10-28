@@ -6,6 +6,7 @@ import type {
   PlaybackRoute,
   PlaybackStats,
   QualityChange,
+  ScreenSessionInfo,
 } from "./types.js";
 
 // NOTE: these are `type` aliases (not interfaces) so they satisfy the
@@ -70,6 +71,25 @@ export type CaptionsEventMap = {
   cleared: { segmentId: string };
   /** The SSE connection dropped. `EventSource` reconnects on its own. */
   error: void;
+};
+
+/** Event payloads emitted by {@link MebiusScreenViewer}. */
+export type ScreenViewerEventMap = {
+  /** The picture stopped for good: the session ended or the connection was lost. */
+  ended: void;
+  /** Watching or a control request failed. Watching continues unless `ended` follows. */
+  error: MebiusError;
+};
+
+/** Event payloads emitted by {@link MebiusScreenShare}. */
+export type ScreenShareEventMap = {
+  /** Someone started watching this screen. Show the user a notice. */
+  viewing: ScreenSessionInfo;
+  /** That session ended. The share itself keeps running. */
+  ended: { sessionId: string };
+  /** The share stopped: {@link MebiusScreenShare.stop}, or the user ended it in the browser. */
+  stopped: void;
+  error: MebiusError;
 };
 
 type Listener<T> = (payload: T) => void;

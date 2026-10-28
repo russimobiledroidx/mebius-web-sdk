@@ -8,7 +8,7 @@ import type { PlaybackStats } from "../types.js";
 import { mebiusError } from "../errors.js";
 import type { SignalingClient } from "./signaling.js";
 import type { ViewTransport } from "./transport.js";
-import { DEFAULT_RTC_CONFIG, waitForIceGathering } from "./webrtc-util.js";
+import { rtcConfig, waitForIceGathering } from "./webrtc-util.js";
 import { playWithAutoplayFallback, resetVideoElement } from "./autoplay.js";
 
 /**
@@ -82,7 +82,13 @@ export class WhepViewTransport implements ViewTransport {
   constructor(
     private readonly signaling: SignalingClient,
     private readonly targetLatencyMs: number = DEFAULT_REALTIME_TARGET_MS,
+    private readonly iceServers?: readonly RTCIceServer[],
   ) {}
+
+  /** The connection's state, or `"closed"` once there is none. */
+  get connectionState(): RTCPeerConnectionState {
+    return this.pc?.connectionState ?? "closed";
+  }
 
   onEnded(cb: () => void): void {
     this.endedCb = cb;
@@ -94,7 +100,7 @@ export class WhepViewTransport implements ViewTransport {
 
   async start(streamId: string, video: HTMLVideoElement): Promise<void> {
     this.video = video;
-    const pc = new RTCPeerConnection(DEFAULT_RTC_CONFIG);
+    const pc = new RTCPeerConnection(rtcConfig(this.iceServers));
     this.pc = pc;
     const remote = new MediaStream();
 

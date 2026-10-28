@@ -152,8 +152,9 @@ export function isMissingRung(status: number | undefined): boolean {
 export function createPublishTransport(
   signaling: SignalingClient,
   maxBitrateKbps?: number,
+  iceServers?: readonly RTCIceServer[],
 ): PublishTransport {
-  return new WhipPublishTransport(signaling, maxBitrateKbps);
+  return new WhipPublishTransport(signaling, maxBitrateKbps, iceServers);
 }
 
 /**

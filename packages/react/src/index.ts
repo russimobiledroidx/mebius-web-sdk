@@ -15,6 +15,7 @@ import {
   type PlayerOptions,
   type MebiusError,
   type MebiusDelivery,
+  type MebiusScreenViewer,
 } from "@mebius-io/web";
 
 export type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
@@ -262,4 +263,92 @@ export function useCaptions(
   }, [client, player, streamId, lang]);
 
   return { segment };
+}
+
+export type ScreenViewerStatus = "idle" | "connecting" | "watching" | "ended" | "error";
+
+export interface UseScreenViewerOptions {
+  appId: string;
+  gateway: string;
+  /** The screen session to watch; `null` until your backend has created one. */
+  sessionId: string | null;
+  /** The session's view token, from the same backend response. */
+  token: string | null;
+  /** Relay servers from the same response, if any. Keep the reference stable. */
+  iceServers?: RTCIceServer[];
+  /** Send mouse and keyboard to the shared screen (a `control` session only). */
+  control?: boolean;
+  /**
+   * Mint a fresh view token for this session. Needed for `control`: input is
+   * checked against a token that lasts 10 minutes. Like `getToken` on
+   * {@link useMebius}, the latest one passed is always the one called.
+   */
+  refreshToken?: () => string | Promise<string>;
+}
+
+export interface UseScreenViewerResult {
+  viewer: MebiusScreenViewer | null;
+  videoRef: React.RefObject<HTMLVideoElement>;
+  status: ScreenViewerStatus;
+  error: MebiusError | null;
+}
+
+/** Watch (and optionally control) a screen session, rendering into `videoRef`. */
+export function useScreenViewer({
+  appId,
+  gateway,
+  sessionId,
+  token,
+  iceServers,
+  control = false,
+  refreshToken,
+}: UseScreenViewerOptions): UseScreenViewerResult {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [viewer, setViewer] = useState<MebiusScreenViewer | null>(null);
+  const [status, setStatus] = useState<ScreenViewerStatus>("idle");
+  const [error, setError] = useState<MebiusError | null>(null);
+  const refreshRef = useRef(refreshToken);
+  refreshRef.current = refreshToken;
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!sessionId || !token || !video) return;
+    Mebius.init({ appId, gateway });
+    const v = Mebius.createScreenViewer();
+    v.on("ended", () => setStatus("ended"));
+    v.on("error", (e) => setError(e));
+    setStatus("connecting");
+    setError(null);
+    let cancelled = false;
+    v.watch({ sessionId, token, iceServers }, video).then(
+      () => {
+        if (cancelled) return;
+        setViewer(v);
+        setStatus((s) => (s === "connecting" ? "watching" : s));
+      },
+      (e: MebiusError) => {
+        if (cancelled) return;
+        setError(e);
+        setStatus("error");
+      },
+    );
+    return () => {
+      cancelled = true;
+      v.close();
+      setViewer(null);
+      setStatus("idle");
+    };
+    // Keep passing the token watching started with: the viewer renews its own
+    // through refreshToken, and a new `token` here reconnects the picture.
+  }, [appId, gateway, sessionId, token, iceServers]);
+
+  useEffect(() => {
+    if (!viewer || !control) return;
+    viewer.enableControl({
+      refreshToken: () => (refreshRef.current ? refreshRef.current() : Promise.reject(new Error("no refreshToken"))),
+    });
+    return () => viewer.disableControl();
+  }, [viewer, control]);
+
+  return { viewer, videoRef, status, error };
 }

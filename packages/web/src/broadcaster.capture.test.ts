@@ -70,4 +70,12 @@ describe("broadcaster capture constraints", () => {
     await captureAndSwitch();
     expect(getUserMedia.mock.calls[1]).toEqual([{ video: { facingMode: "environment" }, audio: false }]);
   });
+
+  it("publishes a copy of an app-supplied source without asking for the camera", async () => {
+    const copy = {};
+    const source = { clone: () => copy } as unknown as MediaStream;
+    const { getUserMedia, captureAndSwitch } = setup({ source });
+    await captureAndSwitch();
+    expect(getUserMedia).not.toHaveBeenCalled(); // neither on start nor on switch
+  });
 });

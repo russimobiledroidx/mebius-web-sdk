@@ -8,7 +8,7 @@ import type { BroadcastStats } from "../types.js";
 import { mebiusError } from "../errors.js";
 import type { SignalingClient } from "./signaling.js";
 import type { PublishTransport } from "./transport.js";
-import { DEFAULT_RTC_CONFIG, waitForIceGathering } from "./webrtc-util.js";
+import { rtcConfig, waitForIceGathering } from "./webrtc-util.js";
 
 /**
  * Offer H264 ahead of everything else for the outgoing video track.
@@ -67,6 +67,7 @@ export class WhipPublishTransport implements PublishTransport {
   constructor(
     private readonly signaling: SignalingClient,
     private readonly maxBitrateKbps: number = DEFAULT_MAX_BITRATE_KBPS,
+    private readonly iceServers?: readonly RTCIceServer[],
   ) {}
 
   /**
@@ -94,7 +95,7 @@ export class WhipPublishTransport implements PublishTransport {
   }
 
   async start(streamId: string, stream: MediaStream): Promise<void> {
-    const pc = new RTCPeerConnection(DEFAULT_RTC_CONFIG);
+    const pc = new RTCPeerConnection(rtcConfig(this.iceServers));
     this.pc = pc;
 
     for (const track of stream.getTracks()) {

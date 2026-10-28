@@ -139,6 +139,9 @@ Dokumentasi lengkap per package: **[`@mebius-io/web`](packages/web/README.md)** 
   short-lived per-stream.
 - **Sesi tanpa batas waktu** — oper `getToken` dan Mebius memperpanjang
   kredensialnya sendiri; tontonan berjalan berhari-hari tanpa perlu disentuh.
+- **Screen share** — `Mebius.createScreenViewer()` untuk melihat dan mengontrol
+  layar device, `Mebius.createScreenShare()` untuk share layar dari browser
+  atas persetujuan user. Lihat [`packages/web`](./packages/web/README.md#screen-share-lihat--kontrol-layar).
 - **Type-safe** — TypeScript penuh, ESM + CJS + UMD, tree-shakeable.
 
 ## Packages
